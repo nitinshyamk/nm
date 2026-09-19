@@ -10,12 +10,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// DefaultPromptRows is the editor's height when the caller does not say.
+const DefaultPromptRows = 10
+
 // PromptConfig describes the prompt editor.
 type PromptConfig struct {
 	Title       string
 	Context     []string // lines of context shown above the editor
 	Placeholder string
 	Initial     string
+	Rows        int // editor height; DefaultPromptRows when zero
 }
 
 // PromptResult is what the editor returned.
@@ -24,9 +28,11 @@ type PromptResult struct {
 	Submitted bool
 }
 
-// RunPrompt opens a full-screen editor with emacs keybindings.
+// RunPrompt opens the prompt editor, which uses emacs keybindings.
 func RunPrompt(cfg PromptConfig) (PromptResult, error) {
-	final, err := tea.NewProgram(newPrompt(cfg), tea.WithAltScreen()).Run()
+	// Inline, like the picker: a pane under the command rather than a
+	// takeover of the terminal.
+	final, err := tea.NewProgram(newPrompt(cfg)).Run()
 	if err != nil {
 		return PromptResult{}, err
 	}
@@ -46,6 +52,7 @@ type prompt struct {
 	confirmCancel bool
 	discard       int // 0 = keep editing, 1 = discard
 	width, height int
+	done          bool // set on the way out, so the pane erases itself
 }
 
 func newPrompt(cfg PromptConfig) prompt {
@@ -102,10 +109,17 @@ var killKeys = map[string]bool{
 func (m prompt) Init() tea.Cmd { return textarea.Blink }
 
 func (m *prompt) resize() {
-	width := max(m.width-4, 20)
-	height := max(m.height-len(m.cfg.Context)-8, 3)
-	m.area.SetWidth(width)
-	m.area.SetHeight(height)
+	rows := m.cfg.Rows
+	if rows <= 0 {
+		rows = DefaultPromptRows
+	}
+	// Shrink when the terminal cannot spare the room for the context lines,
+	// title, and help.
+	if fits := m.height - len(m.cfg.Context) - 8; fits > 0 && fits < rows {
+		rows = fits
+	}
+	m.area.SetWidth(max(m.width-4, 20))
+	m.area.SetHeight(max(rows, 3))
 }
 
 func (m prompt) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -124,6 +138,7 @@ func (m prompt) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.discard = 1 - m.discard
 			case "enter":
 				if m.discard == 1 {
+					m.done = true
 					return m, tea.Quit
 				}
 				m.confirmCancel = false
@@ -136,9 +151,11 @@ func (m prompt) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch pressed {
 		case "ctrl+s", "alt+enter":
 			m.result = PromptResult{Text: strings.TrimSpace(m.area.Value()), Submitted: true}
+			m.done = true
 			return m, tea.Quit
 		case "esc", "ctrl+g", "ctrl+c":
 			if strings.TrimSpace(m.area.Value()) == "" {
+				m.done = true
 				return m, tea.Quit
 			}
 			m.confirmCancel, m.discard = true, 0
@@ -188,6 +205,11 @@ func removedText(before, after string) string {
 }
 
 func (m prompt) View() string {
+	// The editor has done its job; leave the terminal to the command output.
+	if m.done {
+		return ""
+	}
+
 	var b strings.Builder
 	b.WriteString(styleTitle.Render(m.cfg.Title) + "\n")
 	for _, line := range m.cfg.Context {
@@ -214,8 +236,10 @@ func (m prompt) View() string {
 	if m.kill != "" {
 		status += " · ctrl+y yanks the last kill"
 	}
-	b.WriteString(styleHelp.Render(
-		"ctrl+s submit · ctrl+g cancel · enter newline · " +
-			"ctrl+a/e line · alt+b/f word · ctrl+k/u/w kill · ctrl+y yank\n" + status))
+	help := wrapParts([]string{
+		"ctrl+s submit", "ctrl+g cancel", "enter newline",
+		"ctrl+a/e line", "alt+b/f word", "ctrl+k/u/w kill", "ctrl+y yank",
+	}, m.width-2)
+	b.WriteString(styleHelp.Render(help + "\n" + status))
 	return b.String()
 }

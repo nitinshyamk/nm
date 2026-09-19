@@ -29,12 +29,18 @@ type Action struct {
 	Verb    string // button label in the confirmation dialog, e.g. "Delete"
 }
 
+// DefaultMaxRows is how many entries the picker shows at once when the
+// caller does not say. The picker draws inline, below the command that
+// started it, so it stays a small pane rather than taking the screen.
+const DefaultMaxRows = 8
+
 // Config describes a picker.
 type Config struct {
 	Title   string
 	Rows    []Row
 	Actions []Action
 	Empty   string
+	MaxRows int // entries visible at once; DefaultMaxRows when zero
 }
 
 // Outcome is what the user chose. Action is empty when they quit.
@@ -46,7 +52,9 @@ type Outcome struct {
 // Run displays the picker and blocks until the user chooses or quits.
 func Run(cfg Config) (Outcome, error) {
 	m := newPicker(cfg)
-	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	// No alt screen: the picker renders in place under the prompt and leaves
+	// the scrollback intact.
+	final, err := tea.NewProgram(m).Run()
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -71,6 +79,8 @@ type picker struct {
 	confirmRow    *Row
 	confirmAction Action
 	confirmChoice int // 0 = cancel, 1 = proceed
+
+	done bool // set on the way out, so the pane erases itself
 }
 
 func newPicker(cfg Config) picker {
@@ -100,6 +110,7 @@ func (m picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m picker) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q", "esc":
+		m.done = true
 		return m, tea.Quit
 	case "up", "k", "ctrl+p":
 		m.cursor = clamp(m.cursor-1, 0, len(m.rows)-1)
@@ -136,6 +147,7 @@ func (m picker) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.outcome = Outcome{Action: action.Name, Row: row}
+			m.done = true
 			return m, tea.Quit
 		}
 	}
@@ -180,6 +192,7 @@ func (m picker) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.outcome = Outcome{Action: m.confirmAction.Name, Row: *m.confirmRow}
+		m.done = true
 		return m, tea.Quit
 	}
 	return m, nil
@@ -202,9 +215,17 @@ func (m *picker) applyFilter() {
 	m.cursor = clamp(m.cursor, 0, len(m.rows)-1)
 }
 
+// pageSize is how many rows are drawn at once: the configured maximum, or
+// fewer when the terminal itself is short.
 func (m picker) pageSize() int {
-	// Two lines per row, minus the header, help line, and breathing room.
-	size := (m.height - 6) / 2
+	size := m.cfg.MaxRows
+	if size <= 0 {
+		size = DefaultMaxRows
+	}
+	// Two lines per row, leaving space for the title, help, and scroll hints.
+	if fits := (m.height - 6) / 2; fits > 0 && fits < size {
+		size = fits
+	}
 	if size < 1 {
 		return 1
 	}
@@ -212,6 +233,12 @@ func (m picker) pageSize() int {
 }
 
 func (m picker) View() string {
+	// Once the choice is made the pane has served its purpose; erasing it
+	// leaves the terminal showing the command and its output, nothing else.
+	if m.done {
+		return ""
+	}
+
 	var b strings.Builder
 
 	title := m.cfg.Title
@@ -332,7 +359,7 @@ func (m picker) helpLine() string {
 		parts = append(parts, fmt.Sprintf("%s %s", key, action.Help))
 	}
 	parts = append(parts, "↑/↓ move", "/ filter", "q quit")
-	return strings.Join(parts, " · ")
+	return wrapParts(parts, m.width)
 }
 
 // truncate keeps the tail of a string, which is the informative end of a path.

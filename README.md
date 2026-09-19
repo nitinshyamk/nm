@@ -140,10 +140,16 @@ keys nm does not recognize are left alone.
 | `tasks_root` | `~/projects/tasks` | where tasks are created |
 | `artifacts_dir` | `artifacts` | output directory inside each task |
 | `hash_length` | `6` | characters of hash in generated names |
+| `list_rows` | `8` | entries visible in the list pane |
+| `prompt_rows` | `10` | height of the prompt editor |
 | `editor_command` | `code` | what `o` opens the task with |
 | `claude_command` | `claude` | the agent CLI |
 | `install_dir` | `~/.local/bin` | where `mise run install` puts the binary |
 | `default_base_branch` | `""` | override the detected default branch |
+
+The lists and the prompt editor draw as a pane below your command rather than
+taking over the terminal, and scroll away with the rest of your scrollback;
+`list_rows` and `prompt_rows` set how tall they get.
 
 `nm config` prints the file's location and contents; `nm config get <key>`
 prints one setting with `~` already expanded.

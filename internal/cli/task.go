@@ -94,7 +94,7 @@ func startAgent(out io.Writer, cfg config.Config, t *task.Task) error {
 		return fmt.Errorf("%s is not on PATH, so no agent was started", cfg.ClaudeCommand)
 	}
 
-	prompt, err := collectPrompt(*t)
+	prompt, err := collectPrompt(cfg, *t)
 	if err != nil {
 		return err
 	}
@@ -128,7 +128,7 @@ func startAgent(out io.Writer, cfg config.Config, t *task.Task) error {
 }
 
 // collectPrompt opens the editor, or reads stdin when nm is being scripted.
-func collectPrompt(t task.Task) (string, error) {
+func collectPrompt(cfg config.Config, t task.Task) (string, error) {
 	if !tui.Interactive() {
 		piped, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -142,6 +142,7 @@ func collectPrompt(t task.Task) (string, error) {
 		repos = append(repos, r.Name)
 	}
 	result, err := tui.RunPrompt(tui.PromptConfig{
+		Rows:  cfg.PromptRows,
 		Title: "Prompt for " + t.Label(),
 		Context: []string{
 			t.Dir,

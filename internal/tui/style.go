@@ -4,6 +4,7 @@ package tui
 
 import (
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -66,6 +67,33 @@ func badgeStyle(kind BadgeKind) lipgloss.Style {
 	default:
 		return lipgloss.NewStyle().Foreground(colorMuted)
 	}
+}
+
+// wrapParts packs help items into lines that fit the given width, so the
+// key legend never runs off the edge of a narrow terminal.
+func wrapParts(parts []string, width int) string {
+	const sep = " · "
+	if width < 20 {
+		width = 20
+	}
+
+	var lines []string
+	current := ""
+	for _, part := range parts {
+		switch {
+		case current == "":
+			current = part
+		case len(current)+len(sep)+len(part) <= width:
+			current += sep + part
+		default:
+			lines = append(lines, current)
+			current = part
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Interactive reports whether nm is attached to a terminal it can draw on.

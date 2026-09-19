@@ -20,6 +20,8 @@ type Config struct {
 	TasksRoot         string `json:"tasks_root"`
 	ArtifactsDir      string `json:"artifacts_dir"`
 	HashLength        int    `json:"hash_length"`
+	ListRows          int    `json:"list_rows"`
+	PromptRows        int    `json:"prompt_rows"`
 	EditorCommand     string `json:"editor_command"`
 	ClaudeCommand     string `json:"claude_command"`
 	InstallDir        string `json:"install_dir"`
@@ -34,6 +36,8 @@ func Defaults() Config {
 		TasksRoot:         "~/projects/tasks",
 		ArtifactsDir:      "artifacts",
 		HashLength:        6,
+		ListRows:          8,
+		PromptRows:        10,
 		EditorCommand:     "code",
 		ClaudeCommand:     "claude",
 		InstallDir:        "~/.local/bin",

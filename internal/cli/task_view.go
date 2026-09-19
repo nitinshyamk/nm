@@ -56,9 +56,10 @@ func runTaskList(cmd *cobra.Command) error {
 		}
 
 		outcome, err := tui.Run(tui.Config{
-			Title: fmt.Sprintf("tasks in %s", cfg.Tasks()),
-			Rows:  rows,
-			Empty: "no tasks yet — create one with: nm task new <repo>... -n <name>",
+			Title:   fmt.Sprintf("tasks in %s", cfg.Tasks()),
+			Rows:    rows,
+			MaxRows: cfg.ListRows,
+			Empty:   "no tasks yet — create one with: nm task new <repo>... -n <name>",
 			Actions: []tui.Action{
 				{Key: "enter", Name: "select", Help: "cd here"},
 				{Key: "o", Name: "open", Help: "open editor + agent"},

@@ -236,3 +236,47 @@ func TestPromptViewShowsContextAndHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestEditorErasesItselfOnTheWayOut(t *testing.T) {
+	// Submitted.
+	m, _ := send(t, editor(), typeText("do the thing")...)
+	m, _ = send(t, m, ctrl("ctrl+s"))
+	if got := m.View(); got != "" {
+		t.Errorf("the editor still renders after submitting:\n%s", got)
+	}
+
+	// Cancelled while empty.
+	m, _ = send(t, editor(), ctrl("ctrl+g"))
+	if got := m.View(); got != "" {
+		t.Errorf("the editor still renders after cancelling:\n%s", got)
+	}
+
+	// Discarded through the confirmation.
+	m, _ = send(t, editor(), typeText("half")...)
+	m, _ = send(t, m, ctrl("ctrl+g"), pressKey("right"), pressKey("enter"))
+	if got := m.View(); got != "" {
+		t.Errorf("the editor still renders after discarding:\n%s", got)
+	}
+
+	// Still editing: the pane stays.
+	m, _ = send(t, editor(), typeText("still writing")...)
+	if m.View() == "" {
+		t.Error("the editor erased itself while still in use")
+	}
+}
+
+func TestEditorHeightIsBounded(t *testing.T) {
+	m := newPrompt(PromptConfig{Title: "p"})
+	m.width, m.height = 100, 200
+	m.resize()
+	if got := m.area.Height(); got != DefaultPromptRows {
+		t.Errorf("editor height = %d in a 200-line terminal, want %d", got, DefaultPromptRows)
+	}
+
+	m = newPrompt(PromptConfig{Title: "p", Rows: 4})
+	m.width, m.height = 100, 200
+	m.resize()
+	if got := m.area.Height(); got != 4 {
+		t.Errorf("editor height = %d, want the configured 4", got)
+	}
+}

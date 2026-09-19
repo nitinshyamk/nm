@@ -262,3 +262,82 @@ func TestLongListScrollsToKeepTheCursorVisible(t *testing.T) {
 		t.Error("the list does not say how many rows are scrolled off")
 	}
 }
+
+func TestPaneStaysSmallAndYieldsToShortTerminals(t *testing.T) {
+	rows := make([]Row, 40)
+	for i := range rows {
+		rows[i] = Row{ID: fmt.Sprint(i), Title: fmt.Sprintf("row-%02d", i)}
+	}
+
+	// A tall terminal does not mean a tall pane.
+	m := newPicker(Config{Title: "many", Rows: rows})
+	m.width, m.height = 80, 200
+	if got := m.pageSize(); got != DefaultMaxRows {
+		t.Errorf("pageSize = %d in a 200-line terminal, want the %d-row pane", got, DefaultMaxRows)
+	}
+
+	// An explicit maximum is honored.
+	m = newPicker(Config{Title: "many", Rows: rows, MaxRows: 3})
+	m.width, m.height = 80, 200
+	if got := m.pageSize(); got != 3 {
+		t.Errorf("pageSize = %d, want the configured 3", got)
+	}
+
+	// A short terminal shrinks the pane rather than overflowing it.
+	m = newPicker(Config{Title: "many", Rows: rows, MaxRows: 20})
+	m.width, m.height = 80, 14
+	if got := m.pageSize(); got != 4 {
+		t.Errorf("pageSize = %d in a 14-line terminal, want 4", got)
+	}
+	if got := strings.Count(m.View(), "\n"); got > 14 {
+		t.Errorf("the pane rendered %d lines in a 14-line terminal", got)
+	}
+}
+
+func TestViewIsErasedOnTheWayOut(t *testing.T) {
+	// Inline rendering leaves the last frame on screen, so the picker clears
+	// itself once a choice is made.
+	for _, keys := range [][]string{{"enter"}, {"q"}} {
+		m, quit := press(t, demo(), keys...)
+		if !quit {
+			t.Fatalf("%v did not quit", keys)
+		}
+		if got := m.View(); got != "" {
+			t.Errorf("after %v the pane still renders:\n%s", keys, got)
+		}
+	}
+
+	// Confirmed deletion too.
+	m, _ := press(t, demo(), "d", "right", "enter")
+	if got := m.View(); got != "" {
+		t.Errorf("after confirming, the pane still renders:\n%s", got)
+	}
+
+	// But cancelling keeps the list on screen.
+	m, _ = press(t, demo(), "d", "esc")
+	if m.View() == "" {
+		t.Error("cancelling erased the picker")
+	}
+}
+
+func TestHelpWrapsToTheTerminalWidth(t *testing.T) {
+	parts := []string{"enter cd here", "o open editor + agent", "d delete", "↑/↓ move", "/ filter", "q quit"}
+
+	wide := wrapParts(parts, 200)
+	if strings.Contains(wide, "\n") {
+		t.Errorf("a wide terminal should keep the legend on one line: %q", wide)
+	}
+
+	narrow := wrapParts(parts, 40)
+	for _, line := range strings.Split(narrow, "\n") {
+		if len(line) > 40 {
+			t.Errorf("line %q is %d characters, wider than the terminal", line, len(line))
+		}
+	}
+	// Nothing may be dropped in the process.
+	for _, part := range parts {
+		if !strings.Contains(narrow, part) {
+			t.Errorf("wrapping lost %q", part)
+		}
+	}
+}
