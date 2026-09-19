@@ -1,0 +1,68 @@
+[tools]
+go = "1.25"
+golangci-lint = "latest"
+gofumpt = "latest"
+
+[env]
+NM_INSTALL_DIR = "{{env.HOME}}/.local/bin"
+
+[tasks.build]
+description = "Build the nm binary into bin/"
+run = "go build -o bin/nm ."
+
+[tasks.run]
+description = "Run nm from source (mise run run -- worktree new repo name)"
+run = "go run . {{arg(name='args', var=true, default='')}}"
+
+[tasks.test]
+description = "Run all tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run"
+
+[tasks.format]
+description = "Format all Go source with gofumpt"
+run = "gofumpt -w ."
+
+[tasks."format:check"]
+description = "Fail if any Go source is unformatted"
+run = '''
+unformatted="$(gofumpt -l .)"
+if [ -n "$unformatted" ]; then
+  echo "These files need formatting (run 'mise run format'):"
+  echo "$unformatted"
+  exit 1
+fi
+'''
+
+[tasks.install]
+description = "Build nm and install it into $NM_INSTALL_DIR"
+depends = ["build"]
+run = '''
+mkdir -p "$NM_INSTALL_DIR"
+install -m 0755 bin/nm "$NM_INSTALL_DIR/nm"
+echo "installed $NM_INSTALL_DIR/nm"
+echo
+echo "For 'nm worktree' / 'nm task' to change your shell's directory, add the"
+echo "shell integration to your rc file (or run: mise run setup-shell):"
+echo
+echo '  eval "$(nm shell init bash)"'
+'''
+
+[tasks.setup-shell]
+description = "Append the nm shell integration to your shell rc file (idempotent)"
+run = "./scripts/setup-shell.sh"
+
+[tasks.hooks]
+description = "Install the git pre-commit hook that runs the pre-commit gate"
+run = "mise generate git-pre-commit --task=pre-commit --write"
+
+[tasks.pre-commit]
+description = "Verification gate: format check, lint, build, test"
+depends = ["format:check", "lint", "build", "test"]
+
+[tasks.ci]
+description = "What CI runs (same gate as pre-commit)"
+depends = ["format:check", "lint", "build", "test"]
