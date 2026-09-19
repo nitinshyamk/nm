@@ -41,6 +41,11 @@ func ResolveBase(repoDir, override string, offline bool) (Base, error) {
 		if err != nil {
 			return Base{}, fmt.Errorf("%w: %w", ErrRemoteUnreachable, err)
 		}
+		if strings.TrimSpace(out) == "" {
+			// The remote exists but has no refs yet, so there is nothing to be
+			// stale about: a brand-new GitHub repository looks like this.
+			return localBase(repoDir, override, "origin has no branches yet")
+		}
 		branch, err = ParseSymrefHead(out)
 		if err != nil {
 			return Base{}, err

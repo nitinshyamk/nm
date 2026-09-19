@@ -19,6 +19,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	cmd.AddCommand(newWorktreeCmd(), newShellCmd())
 	return cmd
 }
 

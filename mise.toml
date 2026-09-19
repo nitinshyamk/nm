@@ -53,7 +53,8 @@ echo '  eval "$(nm shell init bash)"'
 
 [tasks.setup-shell]
 description = "Append the nm shell integration to your shell rc file (idempotent)"
-run = "./scripts/setup-shell.sh"
+depends = ["build"]
+run = "./bin/nm shell setup"
 
 [tasks.hooks]
 description = "Install the git pre-commit hook that runs the pre-commit gate"

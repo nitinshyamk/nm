@@ -339,3 +339,29 @@ func TestHazardsWording(t *testing.T) {
 		t.Errorf("Hazards() = %q, want %q", got, want)
 	}
 }
+
+func TestResolveBaseWithEmptyRemote(t *testing.T) {
+	isolate(t)
+	root := t.TempDir()
+	bare := filepath.Join(root, "origin.git")
+	local := filepath.Join(root, "work")
+	git(t, root, "init", "--bare", "-b", "main", bare)
+	git(t, root, "init", "-b", "main", local)
+	writeFile(t, local, "a.txt", "a\n")
+	git(t, local, "add", "-A")
+	git(t, local, "commit", "-m", "first")
+	git(t, local, "remote", "add", "origin", bare)
+
+	// A remote that exists but has never been pushed to has no HEAD to report.
+	// That is not an error: there is nothing stale to protect against.
+	base, err := ResolveBase(local, "", false)
+	if err != nil {
+		t.Fatalf("ResolveBase against an empty remote: %v", err)
+	}
+	if base.Branch != "main" {
+		t.Errorf("Branch = %q, want main", base.Branch)
+	}
+	if !strings.Contains(base.Source, "no branches yet") {
+		t.Errorf("Source = %q, want it to explain the remote is empty", base.Source)
+	}
+}

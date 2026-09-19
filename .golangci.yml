@@ -12,6 +12,13 @@ linters:
     - unconvert
     - wastedassign
   settings:
+    errcheck:
+      # A CLI that cannot write to its own stdout has already lost; checking
+      # every print would bury the code that matters in error handling.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
     revive:
       rules:
         - name: exported
