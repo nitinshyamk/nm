@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func key(s string) tea.KeyMsg {
+func pressKey(s string) tea.KeyMsg {
 	switch s {
 	case "enter":
 		return tea.KeyMsg{Type: tea.KeyEnter}
@@ -35,7 +35,7 @@ func press(t *testing.T, m picker, keys ...string) (picker, bool) {
 	t.Helper()
 	quit := false
 	for _, k := range keys {
-		next, cmd := m.Update(key(k))
+		next, cmd := m.Update(pressKey(k))
 		updated, ok := next.(picker)
 		if !ok {
 			t.Fatalf("Update returned %T", next)

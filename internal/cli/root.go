@@ -19,7 +19,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	cmd.AddCommand(newWorktreeCmd(), newShellCmd())
+	cmd.AddCommand(newWorktreeCmd(), newTaskCmd(), newShellCmd())
 	return cmd
 }
 

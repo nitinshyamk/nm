@@ -245,15 +245,20 @@ func Delete(w Worktree, force bool) (note string, err error) {
 			return "", fmt.Errorf("cannot find the repository owning %s: %w", w.Dir, err)
 		}
 	}
+	return Remove(repoDir, w.Dir, w.Branch, force)
+}
 
-	if err := gitx.RemoveWorktree(repoDir, w.Dir, force); err != nil {
+// Remove deletes a worktree of repoDir and drops its branch when git agrees
+// that is safe. Task directories reuse this for each of their worktrees.
+func Remove(repoDir, dir, branch string, force bool) (note string, err error) {
+	if err := gitx.RemoveWorktree(repoDir, dir, force); err != nil {
 		return "", err
 	}
 	if err := gitx.PruneWorktrees(repoDir); err != nil {
 		return "", err
 	}
-	if w.Branch != "" {
-		return deleteBranchIfSafe(repoDir, w.Branch), nil
+	if branch != "" {
+		return deleteBranchIfSafe(repoDir, branch), nil
 	}
 	return "", nil
 }
