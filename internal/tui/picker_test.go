@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -217,5 +218,47 @@ func TestGroupHeadingsRenderOnce(t *testing.T) {
 	}
 	if !strings.Contains(view, "Working") {
 		t.Errorf("the second group heading is missing:\n%s", view)
+	}
+}
+
+func TestTruncateKeepsTheTailAndRespectsRunes(t *testing.T) {
+	if got := truncate("/home/u/projects/worktrees/nm-id-x-123456", 20); !strings.HasSuffix(got, "nm-id-x-123456") {
+		t.Errorf("truncate dropped the informative end: %q", got)
+	}
+	if got := truncate("short", 20); got != "short" {
+		t.Errorf("truncate shortened a string that fits: %q", got)
+	}
+	// Multi-byte characters must not be sliced in half.
+	got := truncate("ααααβββββ", 5)
+	if len([]rune(got)) != 5 {
+		t.Errorf("truncate returned %d runes, want 5: %q", len([]rune(got)), got)
+	}
+	if !strings.HasSuffix(got, "ββββ") {
+		t.Errorf("truncate mangled multi-byte text: %q", got)
+	}
+}
+
+func TestLongListScrollsToKeepTheCursorVisible(t *testing.T) {
+	rows := make([]Row, 50)
+	for i := range rows {
+		rows[i] = Row{ID: fmt.Sprint(i), Title: fmt.Sprintf("row-%02d", i)}
+	}
+	m := newPicker(Config{Title: "many", Rows: rows, Actions: []Action{{Key: "enter", Name: "select"}}})
+	m.width, m.height = 80, 20
+
+	if !strings.Contains(m.View(), "row-00") {
+		t.Error("the first row is not visible at the top of the list")
+	}
+
+	m, _ = press(t, m, "end")
+	view := m.View()
+	if !strings.Contains(view, "row-49") {
+		t.Errorf("the cursor row is not visible after jumping to the end:\n%s", view)
+	}
+	if strings.Contains(view, "row-00") {
+		t.Error("the list did not scroll: the first row is still shown at the end")
+	}
+	if !strings.Contains(view, "more") {
+		t.Error("the list does not say how many rows are scrolled off")
 	}
 }

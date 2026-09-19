@@ -61,7 +61,6 @@ type picker struct {
 	cfg     Config
 	rows    []Row // filtered view of cfg.Rows
 	cursor  int
-	offset  int
 	width   int
 	height  int
 	outcome Outcome
@@ -201,7 +200,6 @@ func (m *picker) applyFilter() {
 		m.rows = kept
 	}
 	m.cursor = clamp(m.cursor, 0, len(m.rows)-1)
-	m.offset = 0
 }
 
 func (m picker) pageSize() int {
@@ -240,12 +238,10 @@ func (m picker) View() string {
 }
 
 func (m picker) renderRows() string {
+	// The window follows the cursor: enough rows above it to fill the page.
 	visible := m.pageSize()
-	start := m.offset
-	if m.cursor < start {
-		start = m.cursor
-	}
-	if m.cursor >= start+visible {
+	start := 0
+	if m.cursor >= visible {
 		start = m.cursor - visible + 1
 	}
 	end := min(start+visible, len(m.rows))
@@ -339,11 +335,13 @@ func (m picker) helpLine() string {
 	return strings.Join(parts, " · ")
 }
 
+// truncate keeps the tail of a string, which is the informative end of a path.
 func truncate(s string, width int) string {
-	if width <= 1 || len(s) <= width {
+	r := []rune(s)
+	if width <= 1 || len(r) <= width {
 		return s
 	}
-	return "…" + s[len(s)-width+1:]
+	return "…" + string(r[len(r)-width+1:])
 }
 
 func clamp(v, lo, hi int) int {
