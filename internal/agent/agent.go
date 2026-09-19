@@ -83,7 +83,7 @@ func (s Session) Class() Class {
 	switch strings.ToLower(s.State) {
 	case "needs_approval", "needs_reply", "blocked":
 		return ClassNeedsInput
-	case "done", "failed":
+	case "done", "failed", "stopped":
 		return ClassDone
 	case "working":
 		return ClassWorking

@@ -91,6 +91,8 @@ func TestClassification(t *testing.T) {
 		{"idle", "working", ClassWorking},
 		{"idle", "done", ClassDone},
 		{"idle", "failed", ClassDone},
+		// A session stopped by `nm task` deletion, or by hand.
+		{"", "stopped", ClassDone},
 		{"busy", "blocked", ClassNeedsInput},
 
 		// Sessions without a state fall back to status.

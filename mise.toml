@@ -8,7 +8,7 @@ NM_INSTALL_DIR = "{{env.HOME}}/.local/bin"
 
 [tasks.build]
 description = "Build the nm binary into bin/"
-run = "go build -o bin/nm ."
+run = 'go build -ldflags "-X github.com/nitinshyamk/nm/internal/cli.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o bin/nm .'
 
 [tasks.run]
 description = "Run nm from source (mise run run -- worktree new repo name)"
