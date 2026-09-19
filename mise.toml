@@ -35,7 +35,7 @@ fi
 '''
 
 [tasks.install]
-description = "Build nm and install it into $NM_INSTALL_DIR"
+description = "Build nm and install it into install_dir from ~/.nm.json"
 depends = ["build"]
 run = '''
 # The freshly built binary knows where ~/.nm.json says to install it.
