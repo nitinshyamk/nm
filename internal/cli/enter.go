@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/nitinshyamk/nm/internal/shellint"
 )
@@ -20,4 +21,11 @@ func enterDir(out io.Writer, dir string) error {
 		fmt.Fprintf(out, "\n%s\n", shellint.Hint(currentShell()))
 	}
 	return nil
+}
+
+// sorted returns the values in order, for stable error messages.
+func sorted(values []string) []string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	return out
 }

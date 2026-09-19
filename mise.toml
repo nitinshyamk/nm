@@ -3,9 +3,6 @@ go = "1.25"
 golangci-lint = "latest"
 gofumpt = "latest"
 
-[env]
-NM_INSTALL_DIR = "{{env.HOME}}/.local/bin"
-
 [tasks.build]
 description = "Build the nm binary into bin/"
 run = 'go build -ldflags "-X github.com/nitinshyamk/nm/internal/cli.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o bin/nm .'
@@ -41,9 +38,11 @@ fi
 description = "Build nm and install it into $NM_INSTALL_DIR"
 depends = ["build"]
 run = '''
-mkdir -p "$NM_INSTALL_DIR"
-install -m 0755 bin/nm "$NM_INSTALL_DIR/nm"
-echo "installed $NM_INSTALL_DIR/nm"
+# The freshly built binary knows where ~/.nm.json says to install it.
+dir="$(./bin/nm config get install_dir)"
+mkdir -p "$dir"
+install -m 0755 bin/nm "$dir/nm"
+echo "installed $dir/nm"
 echo
 echo "For 'nm worktree' / 'nm task' to change your shell's directory, add the"
 echo "shell integration to your rc file (or run: mise run setup-shell):"

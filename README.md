@@ -145,6 +145,9 @@ keys nm does not recognize are left alone.
 | `install_dir` | `~/.local/bin` | where `mise run install` puts the binary |
 | `default_base_branch` | `""` | override the detected default branch |
 
+`nm config` prints the file's location and contents; `nm config get <key>`
+prints one setting with `~` already expanded.
+
 ## Development
 
 `mise run pre-commit` is the gate: format check, lint, build, test. It runs as

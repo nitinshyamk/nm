@@ -72,3 +72,7 @@ internal/tui/        bubbletea models (list, confirm dialog, prompt editor)
 | `mise run install` | build + install to `~/.local/bin` |
 | `mise run setup-shell` | add shell integration to your rc file |
 | `mise run hooks` | install the git pre-commit hook |
+
+`mise run install` reads `install_dir` from `~/.nm.json` through
+`nm config get`, so the install location is configuration rather than a
+hardcoded path in the task.

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nitinshyamk/nm/internal/config"
 )
 
 func TestWriteManagedBlockIsIdempotent(t *testing.T) {
@@ -80,4 +82,44 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func TestSettingValueExpandsPaths(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.InstallDir = "/opt/bin"
+	cfg.ProjectsRoot = "/src"
+
+	cases := map[string]string{
+		"install_dir":    "/opt/bin",
+		"projects_root":  "/src",
+		"hash_length":    "6",
+		"editor_command": "code",
+	}
+	for key, want := range cases {
+		got, err := settingValue(cfg, key)
+		if err != nil {
+			t.Errorf("settingValue(%q): %v", key, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("settingValue(%q) = %q, want %q", key, got, want)
+		}
+	}
+
+	if _, err := settingValue(cfg, "not_a_setting"); err == nil {
+		t.Error("settingValue accepted an unknown key")
+	} else if !strings.Contains(err.Error(), "install_dir") {
+		t.Errorf("the error should list the known settings, got: %v", err)
+	}
+}
+
+func TestSettingValueUsesHomeExpansion(t *testing.T) {
+	cfg := config.Defaults()
+	got, err := settingValue(cfg, "worktrees_root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(got, "~") {
+		t.Errorf("settingValue returned an unexpanded path: %q", got)
+	}
 }
