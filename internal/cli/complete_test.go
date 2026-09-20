@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/nitinshyamk/nm/internal/config"
+	"github.com/nitinshyamk/nm/internal/gitx"
 	"github.com/spf13/cobra"
 )
 
@@ -15,6 +16,7 @@ import (
 // completion tests never read the developer's own ~/.nm.json or ~/projects.
 func completionEnv(t *testing.T, repos ...string) config.Config {
 	t.Helper()
+	isolateGit(t)
 	root := t.TempDir()
 	projects := filepath.Join(root, "projects")
 	for _, repo := range repos {
@@ -38,6 +40,24 @@ func completionEnv(t *testing.T, repos ...string) config.Config {
 	}
 	t.Setenv(config.EnvPath, path)
 	return cfg
+}
+
+// isolateGit clears the plumbing variables a git hook exports. Without this,
+// `git` run inside a temporary directory follows $GIT_DIR back to the
+// repository being committed to, and a completion test quietly starts
+// answering with this repository's own branches — but only when run from the
+// pre-commit hook, which is the worst way to find out.
+func isolateGit(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+		"GIT_PREFIX", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	} {
+		t.Setenv(key, "") // registers the restore
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestCompleteOneRepoOffersTheProjectsRoot(t *testing.T) {
@@ -72,6 +92,72 @@ func TestCompleteRepoListDropsWhatIsAlreadyTyped(t *testing.T) {
 
 	if got, _ := completeRepoList(nil, []string{"nm"}, "s"); strings.Join(got, ",") != "site" {
 		t.Errorf("completeRepoList with a prefix = %v, want site", got)
+	}
+}
+
+func TestCompleteRebaseArgsWalksThePositions(t *testing.T) {
+	completionEnv(t, "nm")
+
+	if got, _ := completeRebaseArgs(nil, nil, ""); strings.Join(got, ",") != "nm" {
+		t.Errorf("the first argument = %v, want the repositories", got)
+	}
+	// The second argument wants the branches that repository has on origin.
+	cfg := completionEnvConfig(t)
+	seedRemoteBranches(t, cfg.RepoPath("nm"), "main", "feature/auth")
+
+	got, directive := completeRebaseArgs(nil, []string{"nm"}, "")
+	if directive != noFiles {
+		t.Errorf("directive = %v, want no file completion", directive)
+	}
+	if strings.Join(got, ",") != "feature/auth,main" {
+		t.Errorf("branches = %v, want feature/auth and main", got)
+	}
+	if got, _ := completeRebaseArgs(nil, []string{"nm"}, "feat"); strings.Join(got, ",") != "feature/auth" {
+		t.Errorf("branches with a prefix = %v, want feature/auth", got)
+	}
+	if got, _ := completeRebaseArgs(nil, []string{"nm", "feature/auth"}, ""); len(got) != 0 {
+		t.Errorf("a third argument was offered completions: %v", got)
+	}
+}
+
+// completionEnvConfig re-reads the configuration completionEnv wrote, so a
+// test can reach the same paths nm will.
+func completionEnvConfig(t *testing.T) config.Config {
+	t.Helper()
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+// seedRemoteBranches turns a stub directory into a real repository holding
+// the named remote-tracking branches, which is what branch completion reads.
+func seedRemoteBranches(t *testing.T, dir string, branches ...string) {
+	t.Helper()
+	if err := os.RemoveAll(filepath.Join(dir, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := gitx.Run(dir, args...)
+		if err != nil {
+			t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+		}
+		return out
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "nm test")
+	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.invalid")
+	t.Setenv("GIT_COMMITTER_NAME", "nm test")
+	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.invalid")
+
+	run("init", "--quiet", "-b", "main", ".")
+	run("commit", "--quiet", "--allow-empty", "-m", "seed")
+	head := run("rev-parse", "HEAD")
+	for _, branch := range branches {
+		run("update-ref", "refs/remotes/origin/"+branch, head)
 	}
 }
 

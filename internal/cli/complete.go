@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/nitinshyamk/nm/internal/config"
+	"github.com/nitinshyamk/nm/internal/gitx"
 	"github.com/nitinshyamk/nm/internal/repos"
 	"github.com/nitinshyamk/nm/internal/shellint"
 	"github.com/nitinshyamk/nm/internal/task"
@@ -69,6 +70,43 @@ func completeRepoThenName(cmd *cobra.Command, args []string, toComplete string) 
 // repository twice.
 func completeRepoList(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	return repoNames(toComplete, args), noFiles
+}
+
+// completeRebaseArgs completes `<repo> <branch>`: a repository, and then the
+// branches that repository already knows about on its remote.
+func completeRebaseArgs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	switch len(args) {
+	case 0:
+		return repoNames(toComplete, nil), noFiles
+	case 1:
+		return remoteBranches(cmd, args[0], toComplete), noFiles
+	default:
+		return nil, noFiles
+	}
+}
+
+// completeBaseBranch completes --base against the repository already typed.
+func completeBaseBranch(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		return nil, noFiles
+	}
+	return remoteBranches(cmd, args[0], toComplete), noFiles
+}
+
+// completeRemotes completes --remote against the repository already typed.
+func completeRemotes(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		return nil, noFiles
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, noFiles
+	}
+	out, err := gitx.Run(cfg.RepoPath(args[0]), "remote")
+	if err != nil {
+		return nil, noFiles
+	}
+	return withPrefix(strings.Fields(out), toComplete), noFiles
 }
 
 // completeShells completes the shells nm can generate an integration for.
@@ -138,6 +176,25 @@ func repoNames(prefix string, exclude []string) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// remoteBranches lists the branches a repository knows its remote has.
+//
+// It reads refs that are already on disk rather than asking the remote: a tab
+// press must not wait on the network, and a branch that has never been
+// fetched is not one this shell has heard of yet.
+func remoteBranches(cmd *cobra.Command, repo, prefix string) []string {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	remote := "origin"
+	if cmd != nil {
+		if flag := cmd.Flags().Lookup("remote"); flag != nil && flag.Value.String() != "" {
+			remote = flag.Value.String()
+		}
+	}
+	return withPrefix(gitx.RemoteBranches(cfg.RepoPath(repo), remote), prefix)
 }
 
 // withPrefix keeps the values the user could still be typing.
