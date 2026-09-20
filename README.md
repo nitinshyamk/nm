@@ -50,6 +50,40 @@ The wrapper deliberately passes completion requests straight through to the
 binary. Completion evaluates `nm __complete …` in your live shell, so without
 that guard a tab press could move you.
 
+### Moving is a push, not a jump
+
+The wrapper moves you with `pushd`, so wherever you were stays on the
+directory stack and `popd` puts you back:
+
+```console
+~/notes $ nm task select auth
+~/projects/tasks/auth-9c31a0 $ popd
+~/notes $
+```
+
+A jump to the directory you are already in is skipped, so repeated selections
+do not pile up entries you have to pop one by one. nushell has no `pushd`
+builtin; the script uses `dirs add` from `std/dirs` when that module is loaded
+and plain `cd` when it is not.
+
+### What completes
+
+Tab-completion covers the whole tree, not just command names:
+
+| Where | What you get |
+|---|---|
+| `nm <tab>` | the command groups: `worktree`, `task`, `shell`, `config` |
+| `nm task <tab>` | `list`, `new`, `select`, `pr`, `complete`, `remove` |
+| `nm task select <tab>` | the tasks that exist, labelled with the repos they span |
+| `nm task new <tab>` | repositories in `projects_root`, minus the ones already typed |
+| `nm worktree new <tab>` | the same repositories |
+| `nm config get <tab>` | every setting, with its current value |
+| `nm shell init <tab>` | `bash`, `zsh`, `nu` |
+
+Completion never touches the network and never reports an error: anything it
+cannot work out comes back empty rather than as a listing of your current
+directory.
+
 Without it everything still works — nm prints the directory instead of moving
 you there, and says once how to install the wrapper. Scripts that call `nm`
 get the plain binary and no surprise `cd`.
@@ -122,6 +156,8 @@ nm task pr auth          # push every branch and open a PR per repo
 nm task complete auth    # pr, then remove
 nm task remove auth      # delete it
 ```
+
+`nm task list` prints the same list `nm task` opens.
 
 A name can be the full label (`auth-9c31a0`), the bare name (`auth`), or any
 unambiguous prefix. `nm task pr`:

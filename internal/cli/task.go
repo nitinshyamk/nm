@@ -27,7 +27,8 @@ func newTaskCmd() *cobra.Command {
 			"With no arguments, opens the task list with every action available.\n" +
 			"The subcommands below each do one thing to one task, and complete\n" +
 			"task names as you type them.",
-		Args: cobra.NoArgs,
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTaskList(cmd)
 		},
@@ -37,6 +38,7 @@ func newTaskCmd() *cobra.Command {
 		&cobra.Group{ID: groupTaskMake, Title: "Creating a task:"},
 	)
 	cmd.AddCommand(
+		newTaskListCmd(),
 		newTaskSelectCmd(),
 		newTaskPRCmd(),
 		newTaskCompleteCmd(),
@@ -44,6 +46,23 @@ func newTaskCmd() *cobra.Command {
 		newTaskNewCmd(),
 	)
 	return cmd
+}
+
+// newTaskListCmd is the bare `nm task` under a name, so the listing is
+// something tab-completion can offer rather than a thing you have to know.
+func newTaskListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:               "list",
+		Aliases:           []string{"ls"},
+		GroupID:           groupTaskWork,
+		Short:             "List every task, grouped by what it needs from you",
+		Long:              "The same list `nm task` opens with no arguments.",
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runTaskList(cmd)
+		},
+	}
 }
 
 // Groups within `nm task`: the verbs you reach for daily, then creation.
@@ -66,7 +85,8 @@ func newTaskNewCmd() *cobra.Command {
 			"repository and an artifacts directory.\n\n" +
 			"-p takes no argument: it opens an editor for the prompt, then starts\n" +
 			"a background claude agent in the task directory.",
-		Args: cobra.MinimumNArgs(1),
+		Args:              cobra.MinimumNArgs(1),
+		ValidArgsFunction: completeRepoList,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" {
 				return errors.New("a task needs a name: -n <name>")
@@ -104,6 +124,7 @@ func newTaskNewCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&name, "name", "n", "", "task name (required)")
 	cmd.Flags().BoolVarP(&withPrompt, "prompt", "p", false, "write a prompt and start a background agent")
 	cmd.Flags().BoolVar(&offline, "offline", false, "branch from local refs instead of fetching from origin")
+	_ = cmd.RegisterFlagCompletionFunc("name", cobra.NoFileCompletions)
 	return cmd
 }
 

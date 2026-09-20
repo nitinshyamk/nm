@@ -18,13 +18,30 @@ func newWorktreeCmd() *cobra.Command {
 		Short:   "Create, enter, and delete git worktrees",
 		Long: "With no arguments, opens a list of every worktree to select, enter,\n" +
 			"or delete.",
-		Args: cobra.NoArgs,
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWorktreeList(cmd)
 		},
 	}
-	cmd.AddCommand(newWorktreeNewCmd())
+	cmd.AddCommand(newWorktreeNewCmd(), newWorktreeListCmd())
 	return cmd
+}
+
+// newWorktreeListCmd is the bare `nm worktree` under a name, so the listing
+// is something tab-completion can offer rather than a thing you have to know.
+func newWorktreeListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:               "list",
+		Aliases:           []string{"ls"},
+		Short:             "List every worktree",
+		Long:              "The same list `nm worktree` opens with no arguments.",
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWorktreeList(cmd)
+		},
+	}
 }
 
 func newWorktreeNewCmd() *cobra.Command {
@@ -35,7 +52,8 @@ func newWorktreeNewCmd() *cobra.Command {
 		Long: "Creates <worktrees_root>/<repo>-id-<name>-<hash> on a new branch cut\n" +
 			"from the remote's current default branch. Without a name, today's\n" +
 			"date is used.",
-		Args: cobra.RangeArgs(1, 2),
+		Args:              cobra.RangeArgs(1, 2),
+		ValidArgsFunction: completeRepoThenName,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {

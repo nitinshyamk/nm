@@ -75,9 +75,14 @@ func InitScript(shell string) (string, error) {
 }
 
 // posixScript works in both bash and zsh.
+//
+// It moves with pushd rather than cd, so every jump nm makes is pushed onto
+// the directory stack and "popd" takes you back where you came from. A jump
+// to the directory you are already in is skipped, so the stack does not fill
+// up with the same entry.
 const posixScript = `# nm shell integration.
 # nm cannot change this shell's directory itself, so it writes the directory it
-# selected to $NM_CD_FILE and this function performs the cd.
+# selected to $NM_CD_FILE and this function performs the move.
 nm() {
   # Tab-completion evaluates "nm __complete ..." in this very shell. Those
   # calls must never take the cd path, or pressing tab could move you.
@@ -98,17 +103,26 @@ nm() {
   if [ -s "$nm_cd_file" ]; then
     local nm_target
     nm_target="$(cat "$nm_cd_file")"
-    [ -d "$nm_target" ] && cd "$nm_target" || true
+    # pushd, not cd: the directory you were in stays on the stack, so popd
+    # brings you back. builtin, so a pushd alias or function cannot redirect
+    # it. Already being there is not worth a stack entry.
+    if [ -d "$nm_target" ] && [ "$nm_target" != "$PWD" ]; then
+      builtin pushd "$nm_target" >/dev/null || builtin cd "$nm_target" || true
+    fi
   fi
   rm -f "$nm_cd_file"
   return $nm_status
 }
 `
 
-// nuScript needs def --env: without it the cd would be scoped to the function
-// and vanish when it returns.
+// nuScript needs def --env: without it the move would be scoped to the
+// function and vanish when it returns.
+//
+// nushell keeps its directory stack in the std/dirs module rather than in a
+// pushd builtin, so the script uses "dirs add" when that module is loaded and
+// falls back to cd when it is not.
 const nuScript = `# nm shell integration.
-# def --env lets the cd escape the function and affect the caller.
+# def --env lets the directory change escape the function and affect the caller.
 def --env nm [...args] {
     # Completion requests must not take the cd path (see the posix script).
     if ($args | length) > 0 and ($args | first) in ["__complete" "__completeNoDesc" "completion"] {
@@ -121,8 +135,14 @@ def --env nm [...args] {
     }
     let nm_target = (try { open --raw $nm_cd_file | str trim } catch { "" })
     rm --force $nm_cd_file
-    if ($nm_target | is-not-empty) and ($nm_target | path exists) {
-        cd $nm_target
+    if ($nm_target | is-not-empty) and ($nm_target | path exists) and ($nm_target != $env.PWD) {
+        # "dirs add" is nushell's pushd; it only exists once std/dirs is in
+        # scope, so fall back to cd rather than failing the jump.
+        if (which dirs | is-not-empty) {
+            dirs add $nm_target
+        } else {
+            cd $nm_target
+        }
     }
 }
 `

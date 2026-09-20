@@ -15,28 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// completeTaskNames feeds shell tab-completion with the tasks that exist right
-// now. Completion runs on every tab press, so it never reports errors.
-func completeTaskNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	if len(args) > 0 {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	matches := task.Labels(cfg, toComplete)
-	out := make([]string, 0, len(matches))
-	for _, t := range matches {
-		repos := make([]string, 0, len(t.Repos))
-		for _, r := range t.Repos {
-			repos = append(repos, r.Name)
-		}
-		out = append(out, fmt.Sprintf("%s\t%s", t.Label(), strings.Join(repos, ", ")))
-	}
-	return out, cobra.ShellCompDirectiveNoFileComp
-}
-
 func newTaskSelectCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:               "select [name]",
