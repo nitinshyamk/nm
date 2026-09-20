@@ -8,6 +8,7 @@ nm worktree new nm fix-tui     create a worktree and cd into it
 nm worktree                    list, enter, or delete worktrees
 nm task new nm site -n auth -p create a task across two repos, with an agent
 nm task                        see which tasks need you, and jump into one
+nm task rebase nm feature/auth replay a pushed branch onto main, conflicts and all
 ```
 
 ## Install
@@ -73,16 +74,17 @@ Tab-completion covers the whole tree, not just command names:
 | Where | What you get |
 |---|---|
 | `nm <tab>` | the command groups: `worktree`, `task`, `shell`, `config` |
-| `nm task <tab>` | `list`, `new`, `select`, `pr`, `complete`, `remove` |
+| `nm task <tab>` | `list`, `new`, `select`, `pr`, `rebase`, `complete`, `remove` |
 | `nm task select <tab>` | the tasks that exist, labelled with the repos they span |
 | `nm task new <tab>` | repositories in `projects_root`, minus the ones already typed |
 | `nm worktree new <tab>` | the same repositories |
+| `nm task rebase nm <tab>` | that repository's branches on origin |
 | `nm config get <tab>` | every setting, with its current value |
 | `nm shell init <tab>` | `bash`, `zsh`, `nu` |
 
-Completion never touches the network and never reports an error: anything it
-cannot work out comes back empty rather than as a listing of your current
-directory.
+Completion never touches the network and never reports an error: branch
+suggestions come from refs already on disk, and anything it cannot work out
+comes back empty rather than as a listing of your current directory.
 
 Without it everything still works — nm prints the directory instead of moving
 you there, and says once how to install the wrapper. Scripts that call `nm`
@@ -176,6 +178,63 @@ unambiguous prefix. `nm task pr`:
 uncommitted work, unpushed commits, files in `artifacts/`, or an agent still
 working (which is stopped first). Otherwise they just do it. `-y` skips the
 question.
+
+### Rebasing a branch that is already out there
+
+```bash
+nm task rebase nm feature/auth
+```
+
+`nm task new` starts work; `nm task rebase` picks up work that already exists.
+It takes exactly one repository and one branch, and that branch has to be on
+the remote already — a typo becomes an error rather than a new branch.
+
+```
+~/projects/tasks/feature-auth-8d21b4/
+└── nm-8d21b4/          the worktree, on branch feature/auth
+```
+
+The worktree keeps the branch's own name, because that branch is what gets
+pushed back; only the task directory carries a hash. A branch with slashes in
+it is flattened for the directory name and left alone for the branch.
+
+What it does, in order:
+
+1. checks `feature/auth` out into a task of its own, tracking `origin`;
+2. runs `git pull --rebase origin <base>`, where the base is the remote's
+   current default branch unless you pass `--base`;
+3. if that was clean, pushes with `--force-with-lease` — a rebase rewrites
+   history, so nothing else would land, and the lease is what keeps the push
+   from quietly discarding a commit somebody else added while nm was working;
+4. if it conflicted, leaves the rebase in progress and hands it to a
+   background agent.
+
+The agent resolves the conflicts, runs whatever verification gate the
+repository documents for itself, and pushes with `--force-with-lease` only
+once that passes. It is told to stop rather than guess when a conflict is
+really a decision — when the two sides do different things, or the base
+removed something the branch is built on. Escalating means leaving the
+worktree exactly as it is, writing the choice up in
+`artifacts/rebase-escalation.md`, and stopping; the task then shows up under
+**Needs input** in `nm task` with an artifact waiting for you.
+
+| Flag | Effect |
+|---|---|
+| `--base <branch>` | rebase onto this instead of the remote's default |
+| `--remote <name>` | the remote holding the branch (default `origin`) |
+| `--verify` | hold a clean replay back too, and have the agent run the checks first |
+| `--no-agent` | leave the conflicts for you, with the commands to finish |
+| `--no-push` | do the rebase, push nothing |
+
+A clean replay is pushed without running anything: that is what `git pull
+--rebase && git push --force-with-lease` does by hand, and nm has no idea what
+your repository's checks are. `--verify` buys the agent's judgement for it —
+git merging the text without complaining is not the same as the result still
+working.
+
+Your shell is left in the worktree. When you are done, `nm task remove
+feature-auth` clears it away; the branch itself is on the remote and is never
+deleted by nm.
 
 ### The task list
 

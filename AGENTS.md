@@ -11,6 +11,8 @@ Instructions for AI agents working in this repository.
 - **Tasks** — a unit of work spanning one or more repos, living in
   `~/projects/tasks/<name>-<hash>/`: one worktree per repo, an `artifacts/`
   directory for uncommitted outputs, and optionally a background Claude agent.
+  `nm task rebase` is the one task that starts from a branch that already
+  exists on the remote rather than cutting a new one.
 
 ## Committing — the rule
 
@@ -39,7 +41,7 @@ internal/nmhash/     deterministic short hashes for directory and branch names
 internal/gitx/       every git invocation lives here (os/exec, not go-git)
 internal/repos/      what is a repository under projects_root (completion)
 internal/worktree/   worktree create / discover / delete
-internal/task/       task create / discover / delete, .nm-task.json
+internal/task/       task create / discover / delete, .nm-task.json, rebase
 internal/agent/      `claude` background agents: launch, status, attach
 internal/forge/      the `gh` CLI: auth, find, create, and edit pull requests
 internal/shellint/   shell integration scripts and the cd-file protocol
@@ -62,7 +64,15 @@ internal/tui/        bubbletea models (list, confirm dialog, prompt editor)
   repositories with no network and no GitHub login.
 - Tests build real temporary git repositories with `t.TempDir()`; they must not
   touch `~/projects`, `~/.nm.json`, or the user's real `claude` sessions. Point
-  `NM_CONFIG` at a temporary file for anything that calls `config.Load`.
+  `NM_CONFIG` at a temporary file for anything that calls `config.Load`, and
+  clear `GIT_DIR` and the other plumbing variables (the `isolate` helpers do
+  this) before running git in a temporary directory — the pre-commit hook
+  exports them, so without that a test passes standalone and answers with this
+  repository under the hook.
+- Anything that rewrites shared history pushes with `--force-with-lease`, never
+  `--force`. The lease is what stops a rebase from discarding a commit someone
+  else pushed in the meantime, and it is the only push the rebase agent is
+  allowed to make.
 - `~/.nm.json` is user configuration. It is created at runtime, is never committed,
   and nothing in the repo should assume values other than the defaults in
   `internal/config`.
