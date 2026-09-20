@@ -37,6 +37,7 @@ internal/cli/        cobra command definitions, one file per command group
 internal/config/     ~/.nm.json load/create/defaults
 internal/nmhash/     deterministic short hashes for directory and branch names
 internal/gitx/       every git invocation lives here (os/exec, not go-git)
+internal/repos/      what is a repository under projects_root (completion)
 internal/worktree/   worktree create / discover / delete
 internal/task/       task create / discover / delete, .nm-task.json
 internal/agent/      `claude` background agents: launch, status, attach
@@ -49,12 +50,19 @@ internal/tui/        bubbletea models (list, confirm dialog, prompt editor)
 
 - Adding a command: the cobra wiring goes in `internal/cli`, the behavior goes in
   its own package with tests alongside. Keep `internal/cli` thin.
+- Every command that takes an argument needs a `ValidArgsFunction`, or tab
+  completion falls back to listing files — which is never what an nm argument
+  wants. `TestEveryArgumentHasACompletion` in `internal/cli` enforces this; the
+  completion functions themselves live in `internal/cli/complete.go` and must
+  never error, never touch the network, and never write anything, because they
+  run in the user's live shell on every tab press.
 - Shell out to `git`, `claude`, and `gh` only from `internal/gitx`,
   `internal/agent`, and `internal/forge`. `task.Publish` takes a `Forge`
   interface so the whole pull request pipeline is tested against local
   repositories with no network and no GitHub login.
 - Tests build real temporary git repositories with `t.TempDir()`; they must not
-  touch `~/projects`, `~/.nm.json`, or the user's real `claude` sessions.
+  touch `~/projects`, `~/.nm.json`, or the user's real `claude` sessions. Point
+  `NM_CONFIG` at a temporary file for anything that calls `config.Load`.
 - `~/.nm.json` is user configuration. It is created at runtime, is never committed,
   and nothing in the repo should assume values other than the defaults in
   `internal/config`.

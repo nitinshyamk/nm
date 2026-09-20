@@ -204,3 +204,67 @@ func TestSelectionStillChangesDirectory(t *testing.T) {
 		t.Error("the wrapper no longer runs nm with a cd file for normal commands")
 	}
 }
+
+// TestPosixWrapperPushesOntoTheDirectoryStack covers the part of the contract
+// that is not just "you end up there": every jump nm makes is pushed, so popd
+// takes you back to where you were before it moved you.
+func TestPosixWrapperPushesOntoTheDirectoryStack(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	script, err := InitScript("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "destination")
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(dir, "nm")
+	fakeSrc := "#!/bin/sh\nprintf '%s\\n' \"" + destination + "\" > \"$NM_CD_FILE\"\n"
+	if err := os.WriteFile(fake, []byte(fakeSrc), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(body string) []string {
+		t.Helper()
+		cmd := exec.Command(bash, "-c", script+"\n"+body)
+		cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("running the wrapper: %v", err)
+		}
+		return strings.Split(strings.TrimSpace(string(out)), "\n")
+	}
+
+	sameDir := func(got, want string) bool {
+		a, err := filepath.EvalSymlinks(got)
+		if err != nil {
+			return false
+		}
+		b, err := filepath.EvalSymlinks(want)
+		return err == nil && a == b
+	}
+
+	lines := run("nm task select x >/dev/null\npwd\npopd >/dev/null\npwd\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected two paths, got %v", lines)
+	}
+	if !sameDir(lines[0], destination) {
+		t.Errorf("the jump landed in %q, want %q", lines[0], destination)
+	}
+	if !sameDir(lines[1], dir) {
+		t.Errorf("popd left the shell in %q, want the directory it started in, %q", lines[1], dir)
+	}
+
+	// Jumping to where you already are is not worth a stack entry, or popd
+	// would take two presses to undo one move.
+	depth := run("nm task select x >/dev/null\nnm task select x >/dev/null\ndirs -p | wc -l\n")
+	if got := strings.TrimSpace(depth[len(depth)-1]); got != "2" {
+		t.Errorf("the stack is %s deep after two jumps to the same place, want 2", got)
+	}
+}

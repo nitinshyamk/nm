@@ -16,6 +16,8 @@ func newConfigCmd() *cobra.Command {
 		Short:   "Show nm's configuration",
 		Long:    "Prints the configuration file's location and contents, creating it with defaults if it does not exist.",
 		Args:    cobra.NoArgs,
+
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -39,9 +41,10 @@ func newConfigCmd() *cobra.Command {
 
 func newConfigGetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "get <key>",
-		Short: "Print one setting, with ~ expanded for paths",
-		Args:  cobra.ExactArgs(1),
+		Use:               "get <key>",
+		Short:             "Print one setting, with ~ expanded for paths",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeConfigKeys,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {

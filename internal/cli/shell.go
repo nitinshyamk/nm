@@ -23,6 +23,7 @@ func newShellCmd() *cobra.Command {
 		Short:   "Shell integration for changing directories",
 		Long: "nm runs in its own process and cannot change your shell's directory.\n" +
 			"The integration defines an nm function that performs the cd for it.",
+		ValidArgsFunction: cobra.NoFileCompletions,
 	}
 	cmd.AddCommand(newShellInitCmd(), newShellSetupCmd())
 	return cmd
@@ -30,10 +31,11 @@ func newShellCmd() *cobra.Command {
 
 func newShellInitCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:       "init <" + strings.Join(shellint.Shells(), "|") + ">",
-		Short:     "Print the shell integration script",
-		Args:      cobra.ExactArgs(1),
-		ValidArgs: shellint.Shells(),
+		Use:               "init <" + strings.Join(shellint.Shells(), "|") + ">",
+		Short:             "Print the shell integration script",
+		Args:              cobra.ExactArgs(1),
+		ValidArgs:         shellint.Shells(),
+		ValidArgsFunction: completeShells,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			script, err := shellint.InitScript(args[0])
 			if err != nil {
@@ -52,7 +54,8 @@ func newShellSetupCmd() *cobra.Command {
 		Short: "Add the shell integration to your shell's rc file",
 		Long: "Appends a managed block to your rc file. Running it again refreshes\n" +
 			"that block instead of adding a second one.",
-		Args: cobra.NoArgs,
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if shell == "" {
 				shell = currentShell()
@@ -79,6 +82,7 @@ func newShellSetupCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&shell, "shell", "", "shell to configure (default: $SHELL)")
+	_ = cmd.RegisterFlagCompletionFunc("shell", completeShells)
 	return cmd
 }
 
