@@ -29,11 +29,12 @@ zoxide and direnv use.
 
 `mise run setup-shell` (or `nm shell setup`) adds a managed block to your rc
 file; re-running refreshes that block rather than adding a second one. To do it
-by hand, add one line:
+by hand, add two lines:
 
 ```bash
 # ~/.bashrc  or  ~/.zshrc
 eval "$(nm shell init bash)"
+source <(nm completion bash)   # tab-completion for task names
 ```
 
 ```nu
@@ -41,6 +42,13 @@ eval "$(nm shell init bash)"
 nm shell init nu | save --force ($nu.default-config-dir | path join nm.nu)
 source ($nu.default-config-dir | path join nm.nu)
 ```
+
+cobra has no nushell completion generator, so nushell gets the directory
+wrapper without tab-completion.
+
+The wrapper deliberately passes completion requests straight through to the
+binary. Completion evaluates `nm __complete …` in your live shell, so without
+that guard a tab press could move you.
 
 Without it everything still works — nm prints the directory instead of moving
 you there, and says once how to install the wrapper. Scripts that call `nm`
@@ -103,6 +111,36 @@ echo "refactor auth across both repos" | nm task new nm site -n auth -p
 | `C-a`/`C-e` line start/end | `M-d` kill word forward | `⏎` newline |
 | `M-<`/`M->` buffer start/end | `C-y` yank the last kill | |
 
+### Working on one task
+
+Each of these takes a task name and completes it as you type; with no name,
+they open the list restricted to that one action.
+
+```bash
+nm task select auth      # cd into it
+nm task pr auth          # push every branch and open a PR per repo
+nm task complete auth    # pr, then remove
+nm task remove auth      # delete it
+```
+
+A name can be the full label (`auth-9c31a0`), the bare name (`auth`), or any
+unambiguous prefix. `nm task pr`:
+
+- refuses to start unless `gh` is logged in, so a multi-repo run never stops
+  halfway through;
+- offers to commit anything outstanding, per repo, taking the message in the
+  same emacs editor (committing stages untracked files too, and says so);
+- pushes each branch and opens a PR into the branch it was cut from, titled
+  after the task, with the agent prompt and the commit list as the body;
+- cross-links the PRs to each other when the task spans several repos, and
+  records them in `.nm-task.json` so the list shows a `pr #42` badge;
+- is safe to re-run: pushes are idempotent and an existing PR is reused.
+
+`remove` and `complete` only stop to ask when there is something to lose —
+uncommitted work, unpushed commits, files in `artifacts/`, or an agent still
+working (which is stopped first). Otherwise they just do it. `-y` skips the
+question.
+
 ### The task list
 
 `nm task` groups tasks by what they need from you, most blocked first:
@@ -144,6 +182,7 @@ keys nm does not recognize are left alone.
 | `prompt_rows` | `10` | height of the prompt editor |
 | `editor_command` | `code` | what `o` opens the task with |
 | `claude_command` | `claude` | the agent CLI |
+| `gh_command` | `gh` | the GitHub CLI used by `nm task pr` |
 | `install_dir` | `~/.local/bin` | where `mise run install` puts the binary |
 | `default_base_branch` | `""` | override the detected default branch |
 

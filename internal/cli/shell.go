@@ -18,8 +18,9 @@ const (
 
 func newShellCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "shell",
-		Short: "Shell integration for changing directories",
+		Use:     "shell",
+		GroupID: groupConfig,
+		Short:   "Shell integration for changing directories",
 		Long: "nm runs in its own process and cannot change your shell's directory.\n" +
 			"The integration defines an nm function that performs the cd for it.",
 	}
@@ -112,14 +113,16 @@ func rcPath(shell string) (string, error) {
 	}
 }
 
-// sourceLine is what the managed block contains: a call back into nm, so the
-// wrapper always matches the installed binary.
+// sourceLine is what the managed block contains: calls back into nm, so the
+// wrapper and the completions always match the installed binary.
 func sourceLine(shell string) string {
 	if shell == "nu" {
+		// cobra has no nushell completion generator, so nushell gets the
+		// directory wrapper only.
 		return "nm shell init nu | save --force ($nu.default-config-dir | path join nm.nu)\n" +
 			"source ($nu.default-config-dir | path join nm.nu)"
 	}
-	return fmt.Sprintf("eval \"$(nm shell init %s)\"", shell)
+	return fmt.Sprintf("eval \"$(nm shell init %s)\"\nsource <(nm completion %s)", shell, shell)
 }
 
 // writeManagedBlock adds or refreshes the nm block in an rc file, reporting

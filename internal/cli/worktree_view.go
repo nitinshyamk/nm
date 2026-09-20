@@ -44,7 +44,7 @@ func runWorktreeList(cmd *cobra.Command) error {
 			Empty:   "no worktrees yet — create one with: nm worktree new <repo> [name]",
 			Actions: []tui.Action{
 				{Key: "enter", Name: "select", Help: "cd here"},
-				{Key: "d", Name: "delete", Help: "delete", Confirm: true, Verb: "Delete"},
+				{Key: "d", Name: "delete", Help: "delete", Confirm: tui.ConfirmAlways, Verb: "Delete"},
 			},
 		})
 		if err != nil {

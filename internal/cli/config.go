@@ -11,10 +11,11 @@ import (
 
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "config",
-		Short: "Show nm's configuration",
-		Long:  "Prints the configuration file's location and contents, creating it with defaults if it does not exist.",
-		Args:  cobra.NoArgs,
+		Use:     "config",
+		GroupID: groupConfig,
+		Short:   "Show nm's configuration",
+		Long:    "Prints the configuration file's location and contents, creating it with defaults if it does not exist.",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {

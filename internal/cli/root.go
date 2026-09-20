@@ -11,6 +11,13 @@ import (
 // version is overridden at build time with -ldflags "-X ...cli.version=...".
 var version = "dev"
 
+// Command groups, so the everyday commands are not listed alongside the
+// ones you touch once when setting nm up.
+const (
+	groupCommon = "common"
+	groupConfig = "configuration"
+)
+
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "nm",
@@ -19,7 +26,16 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	cmd.AddGroup(
+		&cobra.Group{ID: groupCommon, Title: "Common commands:"},
+		&cobra.Group{ID: groupConfig, Title: "Configuration:"},
+	)
 	cmd.AddCommand(newWorktreeCmd(), newTaskCmd(), newShellCmd(), newConfigCmd())
+
+	// cobra generates these two itself; file them under Configuration rather
+	// than leaving them in an unlabelled group of their own.
+	cmd.SetHelpCommandGroupID(groupConfig)
+	cmd.SetCompletionCommandGroupID(groupConfig)
 	return cmd
 }
 

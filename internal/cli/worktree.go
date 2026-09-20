@@ -14,6 +14,7 @@ func newWorktreeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "worktree",
 		Aliases: []string{"wt"},
+		GroupID: groupCommon,
 		Short:   "Create, enter, and delete git worktrees",
 		Long: "With no arguments, opens a list of every worktree to select, enter,\n" +
 			"or delete.",

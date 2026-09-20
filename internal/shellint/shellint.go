@@ -79,6 +79,15 @@ const posixScript = `# nm shell integration.
 # nm cannot change this shell's directory itself, so it writes the directory it
 # selected to $NM_CD_FILE and this function performs the cd.
 nm() {
+  # Tab-completion evaluates "nm __complete ..." in this very shell. Those
+  # calls must never take the cd path, or pressing tab could move you.
+  case "$1" in
+    __complete|__completeNoDesc|completion)
+      command nm "$@"
+      return $?
+      ;;
+  esac
+
   local nm_cd_file
   nm_cd_file="$(mktemp "${TMPDIR:-/tmp}/nm-cd.XXXXXX")" || {
     command nm "$@"
@@ -101,6 +110,11 @@ nm() {
 const nuScript = `# nm shell integration.
 # def --env lets the cd escape the function and affect the caller.
 def --env nm [...args] {
+    # Completion requests must not take the cd path (see the posix script).
+    if ($args | length) > 0 and ($args | first) in ["__complete" "__completeNoDesc" "completion"] {
+        ^nm ...$args
+        return
+    }
     let nm_cd_file = (mktemp --tmpdir nm-cd.XXXXXX)
     try {
         with-env { NM_CD_FILE: $nm_cd_file } { ^nm ...$args }

@@ -134,3 +134,73 @@ func TestPosixWrapperActuallyChangesDirectory(t *testing.T) {
 		t.Errorf("shell ended in %q, want %q", got, want)
 	}
 }
+
+// TestCompletionRequestsNeverChangeDirectory is the guard for the sharpest
+// edge in the shell integration: completion evaluates "nm __complete ..." in
+// the user's live shell, so if the wrapper took its normal cd path there, a
+// tab press could move them.
+func TestCompletionRequestsNeverChangeDirectory(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	script, err := InitScript("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	elsewhere := filepath.Join(dir, "elsewhere")
+	if err := os.Mkdir(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A hostile stand-in: it writes a cd request no matter what it is asked,
+	// so only the wrapper's guard can keep the shell in place.
+	fake := filepath.Join(dir, "nm")
+	fakeSrc := "#!/bin/sh\n" +
+		"[ -n \"$NM_CD_FILE\" ] && printf '%s\\n' \"" + elsewhere + "\" > \"$NM_CD_FILE\"\n" +
+		"echo \"ran: $*\"\n"
+	if err := os.WriteFile(fake, []byte(fakeSrc), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, arg := range []string{"__complete", "__completeNoDesc", "completion"} {
+		t.Run(arg, func(t *testing.T) {
+			cmd := exec.Command(bash, "-c", script+"\nnm "+arg+" task select ''\npwd\n")
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			cmd.Dir = dir
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("running the wrapper: %v", err)
+			}
+
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			ended := lines[len(lines)-1]
+			want, err := filepath.EvalSymlinks(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := filepath.EvalSymlinks(ended)
+			if err != nil {
+				t.Fatalf("resolving %q: %v", ended, err)
+			}
+			if got != want {
+				t.Errorf("a %q request moved the shell to %q; it must stay in %q", arg, got, want)
+			}
+			if !strings.Contains(string(out), "ran: "+arg) {
+				t.Errorf("the request never reached the binary:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestSelectionStillChangesDirectory(t *testing.T) {
+	// The guard must not swallow ordinary commands.
+	script, err := InitScript("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, "NM_CD_FILE=\"$nm_cd_file\" command nm \"$@\"") {
+		t.Error("the wrapper no longer runs nm with a cd file for normal commands")
+	}
+}

@@ -20,13 +20,38 @@ type Row struct {
 	Data     any      // caller payload, returned untouched
 }
 
+// ConfirmMode says when an action stops to ask.
+type ConfirmMode int
+
+// When to show a confirmation dialog before returning an action.
+const (
+	ConfirmNever   ConfirmMode = iota // act immediately
+	ConfirmIfRisky                    // ask only when the row has hazards or a note
+	ConfirmAlways
+)
+
 // Action is a key the picker responds to.
 type Action struct {
-	Key     string // key binding, e.g. "d"; the first action also gets enter
-	Name    string // identifier returned in Outcome.Action
-	Help    string // short description for the help line
-	Confirm bool   // ask before returning
-	Verb    string // button label in the confirmation dialog, e.g. "Delete"
+	Key     string      // key binding, e.g. "d"; the first action also gets enter
+	Name    string      // identifier returned in Outcome.Action
+	Help    string      // short description for the help line
+	Confirm ConfirmMode // when to ask before returning
+	Verb    string      // button label in the confirmation dialog, e.g. "Delete"
+}
+
+// Risky reports whether a row carries something worth losing.
+func (r Row) Risky() bool { return len(r.Hazards) > 0 || r.Note != "" }
+
+// asks reports whether this action should stop for confirmation on this row.
+func (a Action) asks(row Row) bool {
+	switch a.Confirm {
+	case ConfirmAlways:
+		return true
+	case ConfirmIfRisky:
+		return row.Risky()
+	default:
+		return false
+	}
 }
 
 // DefaultMaxRows is how many entries the picker shows at once when the
@@ -142,7 +167,7 @@ func (m picker) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	for i, action := range m.cfg.Actions {
 		if key == action.Key || (i == 0 && key == "enter") {
 			row := m.rows[m.cursor]
-			if action.Confirm {
+			if action.asks(row) {
 				m.confirmRow, m.confirmAction, m.confirmChoice = &row, action, 0
 				return m, nil
 			}

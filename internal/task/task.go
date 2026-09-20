@@ -31,6 +31,8 @@ type Repo struct {
 	BaseBranch string `json:"base_branch"`
 	BaseCommit string `json:"base_commit"`
 	Source     string `json:"source"`
+	PRURL      string `json:"pr_url,omitempty"`
+	PRNumber   int    `json:"pr_number,omitempty"`
 }
 
 // Agent records the background claude session started for a task.

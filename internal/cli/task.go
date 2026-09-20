@@ -18,20 +18,39 @@ import (
 
 func newTaskCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "task",
-		Short: "Create, enter, and delete multi-repo tasks",
+		Use:     "task",
+		GroupID: groupCommon,
+		Short:   "Create, enter, and delete multi-repo tasks",
 		Long: "A task is a directory holding one worktree per repository, an\n" +
 			"artifacts directory for output that is never committed, and\n" +
 			"optionally a background claude agent working on it.\n\n" +
-			"With no arguments, opens the task list.",
+			"With no arguments, opens the task list with every action available.\n" +
+			"The subcommands below each do one thing to one task, and complete\n" +
+			"task names as you type them.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTaskList(cmd)
 		},
 	}
-	cmd.AddCommand(newTaskNewCmd())
+	cmd.AddGroup(
+		&cobra.Group{ID: groupTaskWork, Title: "Working on a task:"},
+		&cobra.Group{ID: groupTaskMake, Title: "Creating a task:"},
+	)
+	cmd.AddCommand(
+		newTaskSelectCmd(),
+		newTaskPRCmd(),
+		newTaskCompleteCmd(),
+		newTaskRemoveCmd(),
+		newTaskNewCmd(),
+	)
 	return cmd
 }
+
+// Groups within `nm task`: the verbs you reach for daily, then creation.
+const (
+	groupTaskWork = "task-work"
+	groupTaskMake = "task-make"
+)
 
 func newTaskNewCmd() *cobra.Command {
 	var (
@@ -40,8 +59,9 @@ func newTaskNewCmd() *cobra.Command {
 		offline    bool
 	)
 	cmd := &cobra.Command{
-		Use:   "new <repo> [repo...] -n <name> [-p]",
-		Short: "Create a task spanning one or more repositories",
+		Use:     "new <repo> [repo...] -n <name> [-p]",
+		GroupID: groupTaskMake,
+		Short:   "Create a task spanning one or more repositories",
 		Long: "Creates <tasks_root>/<name>-<hash> containing a worktree per\n" +
 			"repository and an artifacts directory.\n\n" +
 			"-p takes no argument: it opens an editor for the prompt, then starts\n" +

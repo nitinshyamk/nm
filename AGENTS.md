@@ -40,6 +40,7 @@ internal/gitx/       every git invocation lives here (os/exec, not go-git)
 internal/worktree/   worktree create / discover / delete
 internal/task/       task create / discover / delete, .nm-task.json
 internal/agent/      `claude` background agents: launch, status, attach
+internal/forge/      the `gh` CLI: auth, find, create, and edit pull requests
 internal/shellint/   shell integration scripts and the cd-file protocol
 internal/tui/        bubbletea models (list, confirm dialog, prompt editor)
 ```
@@ -48,7 +49,10 @@ internal/tui/        bubbletea models (list, confirm dialog, prompt editor)
 
 - Adding a command: the cobra wiring goes in `internal/cli`, the behavior goes in
   its own package with tests alongside. Keep `internal/cli` thin.
-- Shell out to `git` and `claude` only from `internal/gitx` and `internal/agent`.
+- Shell out to `git`, `claude`, and `gh` only from `internal/gitx`,
+  `internal/agent`, and `internal/forge`. `task.Publish` takes a `Forge`
+  interface so the whole pull request pipeline is tested against local
+  repositories with no network and no GitHub login.
 - Tests build real temporary git repositories with `t.TempDir()`; they must not
   touch `~/projects`, `~/.nm.json`, or the user's real `claude` sessions.
 - `~/.nm.json` is user configuration. It is created at runtime, is never committed,

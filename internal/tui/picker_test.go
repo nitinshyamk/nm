@@ -63,7 +63,7 @@ func demo() picker {
 		},
 		Actions: []Action{
 			{Key: "enter", Name: "select", Help: "enter"},
-			{Key: "d", Name: "delete", Help: "delete", Confirm: true, Verb: "Delete"},
+			{Key: "d", Name: "delete", Help: "delete", Confirm: ConfirmAlways, Verb: "Delete"},
 		},
 		Empty: "no worktrees",
 	})

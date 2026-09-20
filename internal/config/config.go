@@ -24,6 +24,7 @@ type Config struct {
 	PromptRows        int    `json:"prompt_rows"`
 	EditorCommand     string `json:"editor_command"`
 	ClaudeCommand     string `json:"claude_command"`
+	GHCommand         string `json:"gh_command"`
 	InstallDir        string `json:"install_dir"`
 	DefaultBaseBranch string `json:"default_base_branch"`
 }
@@ -40,6 +41,7 @@ func Defaults() Config {
 		PromptRows:        10,
 		EditorCommand:     "code",
 		ClaudeCommand:     "claude",
+		GHCommand:         "gh",
 		InstallDir:        "~/.local/bin",
 		DefaultBaseBranch: "",
 	}

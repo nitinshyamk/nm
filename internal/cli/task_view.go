@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/nitinshyamk/nm/internal/agent"
@@ -63,7 +64,7 @@ func runTaskList(cmd *cobra.Command) error {
 			Actions: []tui.Action{
 				{Key: "enter", Name: "select", Help: "cd here"},
 				{Key: "o", Name: "open", Help: "open editor + agent"},
-				{Key: "d", Name: "delete", Help: "delete", Confirm: true, Verb: "Delete"},
+				{Key: "d", Name: "delete", Help: "delete", Confirm: tui.ConfirmIfRisky, Verb: "Delete"},
 			},
 		})
 		if err != nil {
@@ -172,6 +173,9 @@ func taskRow(e taskEntry) tui.Row {
 		row.Badges = append(row.Badges, tui.Badge{Text: "no agent"})
 	}
 	row.Badges = append(row.Badges, statusBadges(v.Totals())...)
+	if prs := prBadge(v.Task); prs != "" {
+		row.Badges = append(row.Badges, tui.Badge{Text: prs, Kind: tui.BadgeOK})
+	}
 	if v.Artifacts > 0 {
 		row.Badges = append(row.Badges, tui.Badge{
 			Text: fmt.Sprintf("artifacts:%d", v.Artifacts),
@@ -182,6 +186,21 @@ func taskRow(e taskEntry) tui.Row {
 		row.Note = "The agent working here will be stopped."
 	}
 	return row
+}
+
+// prBadge summarizes the pull requests a task already has open, so a task
+// that has been put up for review is obvious in the list.
+func prBadge(t task.Task) string {
+	var numbers []string
+	for _, r := range t.Repos {
+		if r.PRNumber > 0 {
+			numbers = append(numbers, "#"+strconv.Itoa(r.PRNumber))
+		}
+	}
+	if len(numbers) == 0 {
+		return ""
+	}
+	return "pr " + strings.Join(numbers, " ")
 }
 
 func classBadge(c agent.Class) tui.BadgeKind {
@@ -272,6 +291,9 @@ func printTasks(out io.Writer, cfg config.Config) error {
 		status := "no agent"
 		if e.Session != nil {
 			status = e.Session.Describe()
+		}
+		if prs := prBadge(e.View.Task); prs != "" {
+			status += " · " + prs
 		}
 		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", e.View.Task.Label(), e.View.Task.Dir, status, state)
 	}
