@@ -140,8 +140,9 @@ func nuConfigPath(home string) (string, error) {
 // wrapper and the completions always match the installed binary.
 func sourceLine(shell string) string {
 	if shell == "nu" {
-		// cobra has no nushell completion generator, so nushell gets the
-		// directory wrapper only.
+		// The nu script carries its own completer, because cobra generates no
+		// nushell completion -- so unlike bash and zsh there is no second
+		// `nm completion nu` to source.
 		return "nm shell init nu | save --force ($nu.default-config-dir | path join nm.nu)\n" +
 			"source ($nu.default-config-dir | path join nm.nu)"
 	}

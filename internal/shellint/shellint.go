@@ -130,11 +130,39 @@ nm() {
 // function and vanish when it returns.
 //
 // nushell keeps its directory stack in the std/dirs module rather than in a
-// pushd builtin, so the script uses "dirs add" when that module is loaded and
-// falls back to cd when it is not.
+// pushd builtin, and that module is not in scope until it is used. The script
+// used to test "which dirs" and fall back to a plain cd, which on a default
+// nushell meant always falling back: the jump worked but nothing was pushed, so
+// "dirs drop" -- nushell's popd -- could not take you back.
+//
+// cobra generates no nushell completion, so the script parses the same
+// __complete protocol cobra serves to bash and zsh.
 const nuScript = `# nm shell integration.
+
+# std/dirs is nushell's directory stack. Without this use it is not in scope and
+# every jump would be an unrecorded cd, leaving "dirs drop" nothing to undo.
+use std/dirs
+
+# nm answers a __complete request the way cobra does for every other shell:
+# "value<TAB>description" lines, then a ":<directive>" line that is not a
+# candidate. nushell has no generator for this, so the parsing lives here.
+def "nu-complete nm" [context: string] {
+    let parts = ($context | split row ' ' | skip 1)
+    let answer = (do --ignore-errors { ^nm __complete ...$parts } | complete)
+    if $answer.exit_code != 0 {
+        return []
+    }
+    $answer.stdout
+        | lines
+        | where {|line| ($line | str trim) != "" and not ($line | str starts-with ':') }
+        | each {|line|
+            let cut = ($line | split row "\t")
+            {value: ($cut | first), description: ($cut | skip 1 | str join ' ')}
+        }
+}
+
 # def --env lets the directory change escape the function and affect the caller.
-def --env nm [...args] {
+def --env nm [...args: string@"nu-complete nm"] {
     # Completion requests must not take the cd path (see the bash/zsh script).
     if ($args | length) > 0 and ($args | first) in ["__complete" "__completeNoDesc" "completion"] {
         ^nm ...$args
@@ -146,14 +174,14 @@ def --env nm [...args] {
     }
     let nm_target = (try { open --raw $nm_cd_file | str trim } catch { "" })
     rm --force $nm_cd_file
-    if ($nm_target | is-not-empty) and ($nm_target | path exists) and ($nm_target != $env.PWD) {
-        # "dirs add" is nushell's pushd; it only exists once std/dirs is in
-        # scope, so fall back to cd rather than failing the jump.
-        if (which dirs | is-not-empty) {
-            dirs add $nm_target
-        } else {
-            cd $nm_target
-        }
+    if ($nm_target | is-empty) or not ($nm_target | path exists) {
+        return
+    }
+    # path expand on both sides, for the reason the bash script canonicalizes:
+    # nm writes an OS path, which is not always how the shell spells the same
+    # directory, and a jump to where you already are is not worth a stack entry.
+    if ($nm_target | path expand) != ($env.PWD | path expand) {
+        dirs add $nm_target
     }
 }
 `
