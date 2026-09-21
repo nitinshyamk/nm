@@ -9,8 +9,10 @@ Instructions for AI agents working in this repository.
 - **Worktrees** — throwaway git worktrees under `~/projects/worktrees`, created with
   predictable names, then listed, entered, and deleted through a TUI.
 - **Tasks** — a unit of work spanning one or more repos, living in
-  `~/projects/tasks/<name>-<hash>/`: one worktree per repo, an `artifacts/`
-  directory for uncommitted outputs, and optionally a background Claude agent.
+  `~/projects/tasks/<name>-<hash>/`: one worktree per repo, `input/` holding
+  `prompt.md` and any assets the task was given, `artifacts/` for uncommitted
+  outputs, `scratch/` for throwaway working notes, and optionally a background
+  Claude agent.
   `nm task rebase` is the one task that starts from a branch that already
   exists on the remote rather than cutting a new one.
 

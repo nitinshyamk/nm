@@ -21,9 +21,9 @@ func newTaskCmd() *cobra.Command {
 		Use:     "task",
 		GroupID: groupCommon,
 		Short:   "Create, enter, and delete multi-repo tasks",
-		Long: "A task is a directory holding one worktree per repository, an\n" +
-			"artifacts directory for output that is never committed, and\n" +
-			"optionally a background claude agent working on it.\n\n" +
+		Long: "A task is a directory holding one worktree per repository, the\n" +
+			"input/, artifacts/, and scratch/ directories, and optionally a\n" +
+			"background claude agent working on it.\n\n" +
 			"With no arguments, opens the task list with every action available.\n" +
 			"The subcommands below each do one thing to one task, and complete\n" +
 			"task names as you type them.",
@@ -83,7 +83,9 @@ func newTaskNewCmd() *cobra.Command {
 		GroupID: groupTaskMake,
 		Short:   "Create a task spanning one or more repositories",
 		Long: "Creates <tasks_root>/<name>-<hash> containing a worktree per\n" +
-			"repository and an artifacts directory.\n\n" +
+			"repository, input/ for the prompt and any assets that come with it,\n" +
+			"artifacts/ for output that is never committed, and scratch/ for\n" +
+			"throwaway working notes.\n\n" +
 			"-p takes no argument: it opens an editor for the prompt, then starts\n" +
 			"a background claude agent in the task directory.",
 		Args:              cobra.MinimumNArgs(1),
@@ -158,6 +160,9 @@ func startAgent(out io.Writer, cfg config.Config, t *task.Task) error {
 	t.Prompt = prompt
 	t.Agent = &task.Agent{ID: id, LaunchedAt: time.Now(), Raw: raw}
 	if err := t.Save(); err != nil {
+		return err
+	}
+	if err := t.SavePrompt(cfg); err != nil {
 		return err
 	}
 

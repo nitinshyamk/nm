@@ -1,5 +1,6 @@
 // Package task manages multi-repo task directories: a worktree per repository,
-// an artifacts directory, and the record of the agent working on it.
+// the input, artifacts, and scratch directories, and the record of the agent
+// working on it.
 package task
 
 import (
@@ -22,6 +23,11 @@ import (
 
 // MetaFile records what a task directory contains.
 const MetaFile = ".nm-task.json"
+
+// PromptFile is the prompt a task started from, written inside the input
+// directory. The record in MetaFile is the source of truth; this is the copy a
+// human or an agent can read without parsing JSON.
+const PromptFile = "prompt.md"
 
 // Repo is one repository checked out inside a task.
 type Repo struct {
@@ -61,6 +67,31 @@ func (t Task) Label() string { return t.Name + "-" + t.Hash }
 // Artifacts returns the directory holding output that is never committed.
 func (t Task) Artifacts(cfg config.Config) string {
 	return filepath.Join(t.Dir, cfg.ArtifactsDir)
+}
+
+// Input returns the directory holding what the task was given: the prompt, and
+// whatever assets the user drops in beside it.
+func (t Task) Input(cfg config.Config) string {
+	return filepath.Join(t.Dir, cfg.InputDir)
+}
+
+// Scratch returns the directory for throwaway working notes — debugging
+// output, half-finished thinking, anything an agent needs somewhere to put.
+// Nothing in nm reads it back, so it never has to be tidy.
+func (t Task) Scratch(cfg config.Config) string {
+	return filepath.Join(t.Dir, cfg.ScratchDir)
+}
+
+// makeDirs creates the fixed directories every task directory has. It runs on
+// creation and again whenever a prompt is saved, so a task made before one of
+// these directories existed grows it rather than staying half-shaped.
+func (t Task) makeDirs(cfg config.Config) error {
+	for _, dir := range []string{t.Artifacts(cfg), t.Input(cfg), t.Scratch(cfg)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
+	}
+	return nil
 }
 
 // Dirs lists the worktree directories, for passing to an agent as --add-dir.
@@ -166,8 +197,8 @@ func Create(cfg config.Config, opts Options) (t Task, err error) {
 		})
 	}
 
-	if err := os.MkdirAll(t.Artifacts(cfg), 0o755); err != nil {
-		return Task{}, fmt.Errorf("creating the artifacts directory: %w", err)
+	if err := t.makeDirs(cfg); err != nil {
+		return Task{}, err
 	}
 	if err := t.Save(); err != nil {
 		return Task{}, err
@@ -194,6 +225,24 @@ func (t Task) Save() error {
 	}
 	path := filepath.Join(t.Dir, MetaFile)
 	if err := os.WriteFile(path, append(blob, '\n'), 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
+}
+
+// SavePrompt writes the task's prompt to input/prompt.md, so the text an agent
+// was launched with sits beside the assets it was given rather than only inside
+// the JSON record. A task with no prompt writes nothing.
+func (t Task) SavePrompt(cfg config.Config) error {
+	prompt := strings.TrimSpace(t.Prompt)
+	if prompt == "" {
+		return nil
+	}
+	if err := t.makeDirs(cfg); err != nil {
+		return err
+	}
+	path := filepath.Join(t.Input(cfg), PromptFile)
+	if err := os.WriteFile(path, []byte(prompt+"\n"), 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	return nil

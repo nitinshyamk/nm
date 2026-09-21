@@ -180,6 +180,9 @@ func startRebaseAgent(out, errOut io.Writer, cfg config.Config, rb task.Rebase, 
 	if err := t.Save(); err != nil {
 		return err
 	}
+	if err := t.SavePrompt(cfg); err != nil {
+		return err
+	}
 
 	job := "on the conflicts"
 	if report.Outcome != task.RebaseConflicted {

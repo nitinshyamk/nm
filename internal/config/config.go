@@ -19,6 +19,8 @@ type Config struct {
 	WorktreesRoot     string `json:"worktrees_root"`
 	TasksRoot         string `json:"tasks_root"`
 	ArtifactsDir      string `json:"artifacts_dir"`
+	InputDir          string `json:"input_dir"`
+	ScratchDir        string `json:"scratch_dir"`
 	HashLength        int    `json:"hash_length"`
 	ListRows          int    `json:"list_rows"`
 	PromptRows        int    `json:"prompt_rows"`
@@ -36,6 +38,8 @@ func Defaults() Config {
 		WorktreesRoot:     "~/projects/worktrees",
 		TasksRoot:         "~/projects/tasks",
 		ArtifactsDir:      "artifacts",
+		InputDir:          "input",
+		ScratchDir:        "scratch",
 		HashLength:        6,
 		ListRows:          8,
 		PromptRows:        10,
