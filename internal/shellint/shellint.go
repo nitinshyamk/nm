@@ -43,16 +43,20 @@ func Hint(shell string) string {
 }
 
 func evalLine(shell string) string {
-	if shell == "nu" {
+	switch shell {
+	case "nu":
 		return "nm shell init nu | save --force ($nu.default-config-dir | path join nm.nu)\n  source ($nu.default-config-dir | path join nm.nu)"
+	case "powershell":
+		return "nm shell init powershell | Out-String | Invoke-Expression"
 	}
 	return fmt.Sprintf("eval \"$(nm shell init %s)\"", shell)
 }
 
 var scripts = map[string]string{
-	"bash": bashZshScript,
-	"zsh":  bashZshScript,
-	"nu":   nuScript,
+	"bash":       bashZshScript,
+	"zsh":        bashZshScript,
+	"nu":         nuScript,
+	"powershell": psScript,
 }
 
 // Shells lists the shells nm can generate an integration script for.
@@ -183,5 +187,67 @@ def --env nm [...args: string@"nu-complete nm"] {
     if ($nm_target | path expand) != ($env.PWD | path expand) {
         dirs add $nm_target
     }
+}
+`
+
+// psScript is the Windows PowerShell wrapper. Unlike bash and nushell it needs
+// no completion of its own: cobra generates a PowerShell completer, and it fires
+// even though nm is a function here rather than an external command.
+//
+// Push-Location is PowerShell's pushd, so the popd contract holds as it does in
+// bash: Pop-Location takes you back where the jump started.
+const psScript = `# nm shell integration.
+# nm cannot change this shell's directory itself, so it writes the directory it
+# selected to $env:NM_CD_FILE and this function performs the move.
+function nm {
+    # -CommandType Application is what keeps this from recursing into itself,
+    # the way "command nm" does in bash: it matches the executable on PATH and
+    # never this function. The bare name rather than nm.exe so a PATHEXT
+    # alternative such as nm.cmd is found too.
+    $nmExe = Get-Command nm -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $nmExe) {
+        Write-Error 'nm is not on PATH'
+        return
+    }
+
+    # Tab-completion evaluates "nm __complete ..." in this very shell. Those
+    # calls must never take the cd path, or pressing tab could move you.
+    if ($args.Count -gt 0 -and @('__complete','__completeNoDesc','completion') -contains $args[0]) {
+        & $nmExe.Source @args
+        return
+    }
+
+    $nmCdFile = [System.IO.Path]::GetTempFileName()
+    $nmStatus = 0
+    try {
+        $env:NM_CD_FILE = $nmCdFile
+        & $nmExe.Source @args
+        $nmStatus = $LASTEXITCODE
+    } finally {
+        # The variable must not outlive the call, or a later nm would inherit a
+        # stale cd file.
+        Remove-Item Env:NM_CD_FILE -ErrorAction SilentlyContinue
+    }
+
+    $nmTarget = ''
+    if (Test-Path -LiteralPath $nmCdFile) {
+        $nmTarget = Get-Content -Raw -LiteralPath $nmCdFile
+        if ($null -ne $nmTarget) { $nmTarget = $nmTarget.Trim() }
+        Remove-Item -LiteralPath $nmCdFile -Force -ErrorAction SilentlyContinue
+    }
+    if ($nmTarget -and (Test-Path -LiteralPath $nmTarget -PathType Container)) {
+        # Get-Item, not Resolve-Path or Convert-Path: those two preserve an 8.3
+        # short name (C:\Users\NITINS~1\...) while Get-Location reports the long
+        # one, so comparing them as strings never matched and every jump pushed a
+        # duplicate. Already being there is not worth a stack entry.
+        $nmResolved = (Get-Item -LiteralPath $nmTarget).FullName
+        $nmHere = (Get-Item -LiteralPath (Get-Location).Path).FullName
+        if ($nmResolved -ne $nmHere) {
+            Push-Location -LiteralPath $nmResolved
+        }
+    }
+    # Hand nm's exit status back, which the cd bookkeeping above would otherwise
+    # have overwritten.
+    $global:LASTEXITCODE = $nmStatus
 }
 `
