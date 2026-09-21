@@ -81,12 +81,33 @@ internal/tui/        bubbletea models (list, confirm dialog, prompt editor)
   into Go and is reached with `go run .`, and a pass/fail check uses the tool's
   own flag rather than shell exit-code glue. `nm self install` exists because
   the install task used to be bash.
-- Paths that came from `git` cannot be string-compared against paths built by
-  Go. git answers with forward slashes and long names, while `t.TempDir()`
-  returns `C:\Users\NITINS~1\...` on Windows; `filepath.EvalSymlinks` collapses
-  separator, 8.3 short name, and symlink at once. `samePath` in
-  `internal/gitx` and `shellPWD` in `internal/shellint` are the two helpers for
-  this — a bare `!=` on a path is a Windows failure waiting to happen.
+- Paths that came from `git`, or from a shell, cannot be string-compared against
+  paths built by Go. git answers with forward slashes and long names, a shell has
+  its own spelling (`/c/Users/...` under Git Bash), and `t.TempDir()` returns
+  `C:\Users\NITINS~1\...` on Windows. `filepath.EvalSymlinks` collapses
+  separator, 8.3 short name, and symlink at once; `samePath` in `internal/gitx`
+  and `shellPWD` in `internal/shellint` are the helpers. **A bare `!=` on a path
+  has been a bug every single time it appeared** — it is what made every shell
+  wrapper push a duplicate directory-stack entry. In shell scripts, canonicalize
+  with the shell's own tool: `cd && pwd` in bash, `path expand` in nu,
+  `Get-Item .FullName` in PowerShell (`Resolve-Path` and `Convert-Path` both keep
+  8.3 short names).
+- Shell integration lives in `internal/shellint`, one script constant per shell,
+  and each one is tested by **running that shell** rather than asserting on the
+  script's text. The tests skip when the shell is absent, so the suite still
+  passes without nu or PowerShell installed. A test that only parses a script
+  proves nothing: the old `sh -n` check passed on a script dash could not run.
+- Never guess which shell the user is in. `shellint.Detect` ranks evidence —
+  process tree, then `NU_VERSION`, then `$SHELL` away from Windows — and errors
+  rather than defaulting, because `nm shell setup` writes to an rc file and a
+  wrong guess silently configures a shell the user is not in. `$SHELL` is not
+  evidence on Windows, and `NU_VERSION` is exported to descendants so it proves
+  only that a nushell is somewhere above nm.
+- An rc file path is a place to be wrong quietly. nushell reads
+  `%APPDATA%\nushell` on Windows rather than XDG, and PowerShell's `$PROFILE`
+  follows OneDrive redirection of Documents, so both are resolved rather than
+  assumed. Writing the right content to the wrong file reports success and
+  changes nothing.
 - `~/.nm.json` is user configuration. It is created at runtime, is never committed,
   and nothing in the repo should assume values other than the defaults in
   `internal/config`.

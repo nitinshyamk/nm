@@ -27,6 +27,14 @@ type Config struct {
 	GHCommand         string `json:"gh_command"`
 	InstallDir        string `json:"install_dir"`
 	DefaultBaseBranch string `json:"default_base_branch"`
+	// BranchPrefix goes in front of the branches nm creates, so a shared remote
+	// shows whose they are: "nitin/" yields nitin/<name>-<hash>. It is used
+	// literally, trailing slash included, because a prefix ending in - or _ is
+	// just as valid a convention. Empty means unprefixed.
+	//
+	// It applies only to branches nm creates. `nm task rebase` starts from a
+	// branch that already exists on the remote and is never renamed.
+	BranchPrefix string `json:"branch_prefix"`
 }
 
 // Defaults returns the configuration nm writes on first run.
@@ -44,6 +52,7 @@ func Defaults() Config {
 		GHCommand:         "gh",
 		InstallDir:        "~/.local/bin",
 		DefaultBaseBranch: "",
+		BranchPrefix:      "",
 	}
 }
 

@@ -271,3 +271,25 @@ func TestDeleteKeepsBranchesHoldingUniqueCommits(t *testing.T) {
 		t.Error("Delete discarded commits that exist nowhere else")
 	}
 }
+
+func TestBranchNameAppliesThePrefix(t *testing.T) {
+	if got := BranchName("nitin/", "auth", "abc123"); got != "nitin/auth-abc123" {
+		t.Errorf("BranchName = %q, want nitin/auth-abc123", got)
+	}
+	// The default is empty, so an unconfigured nm behaves exactly as before.
+	if got := BranchName("", "auth", "abc123"); got != DirName("auth", "abc123") {
+		t.Errorf("BranchName with no prefix = %q, want the bare %q", got, DirName("auth", "abc123"))
+	}
+	// Used literally: a prefix ending in - or _ is as valid a convention as /.
+	if got := BranchName("wip_", "auth", "abc123"); got != "wip_auth-abc123" {
+		t.Errorf("BranchName = %q, want the prefix used literally", got)
+	}
+}
+
+// The directory name must not pick up the prefix: a / would turn one task
+// directory into a nested pair, and the prefix only matters on a shared remote.
+func TestBranchPrefixDoesNotReachTheDirectoryName(t *testing.T) {
+	if got := DirName("auth", "abc123"); strings.Contains(got, "/") {
+		t.Errorf("DirName = %q, which is a path separator away from being two directories", got)
+	}
+}

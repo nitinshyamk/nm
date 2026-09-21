@@ -39,10 +39,26 @@ source <(nm completion bash)   # tab-completion for task names
 ```
 
 ```nu
-# nushell: def --env is what lets the cd escape the function
+# nushell: def --env is what lets the cd escape the function, and the script
+# carries its own completer because cobra generates none for nushell
 nm shell init nu | save --force ($nu.default-config-dir | path join nm.nu)
 source ($nu.default-config-dir | path join nm.nu)
 ```
+
+```powershell
+# Windows PowerShell 5.1: Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1
+nm shell init powershell | Out-String | Invoke-Expression
+nm completion powershell | Out-String | Invoke-Expression
+```
+
+`nm shell setup` works out which shell you are in from the process tree, so it
+does not have to trust `$SHELL` — which on Windows is often Git's `bash.exe` no
+matter which shell you are actually in. When it cannot tell, it says so and asks
+for `--shell` rather than guessing, because guessing means writing to the rc file
+of a shell you are not using.
+
+Every shell gets the same directory-stack contract, under its own name: `popd` in
+bash and zsh, `Pop-Location` in PowerShell, `dirs drop` in nushell.
 
 cobra has no nushell completion generator, so nushell gets the directory
 wrapper without tab-completion.
@@ -280,6 +296,14 @@ keys nm does not recognize are left alone.
 | `gh_command` | `gh` | the GitHub CLI used by `nm task pr` |
 | `install_dir` | `~/.local/bin` | where `mise run install` puts the binary |
 | `default_base_branch` | `""` | override the detected default branch |
+| `branch_prefix` | `""` | goes in front of branches nm creates, e.g. `nitin/` |
+
+`branch_prefix` is used literally, trailing slash included, so `nitin/` yields
+`nitin/<name>-<hash>` and `wip_` yields `wip_<name>-<hash>`. It applies only to
+branches nm creates: `nm task rebase` starts from a branch that already exists on
+the remote and pushes back to it, so that name is never rewritten. Directory
+names never take the prefix either — a `/` there would nest a worktree a level
+deeper than discovery looks.
 
 The lists and the prompt editor draw as a pane below your command rather than
 taking over the terminal, and scroll away with the rest of your scrollback;

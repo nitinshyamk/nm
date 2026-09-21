@@ -339,3 +339,28 @@ func TestRebasePromptForACleanReplayAsksForTheChecks(t *testing.T) {
 		t.Errorf("the verify prompt has a fourth step it should not:\n%s", prompt)
 	}
 }
+
+// TestStartRebaseIgnoresTheBranchPrefix is the guard on the one place the prefix
+// must not reach. A rebase starts from a branch that already exists on the
+// remote and pushes back to it; prefixing that name would either create a second
+// branch or fail to find the first.
+func TestStartRebaseIgnoresTheBranchPrefix(t *testing.T) {
+	cfg := env(t, "nm")
+	cfg.BranchPrefix = "nitin/"
+	pushBranch(t, cfg, "nm", "feature", "feature.txt", "one\n")
+
+	rb, err := StartRebase(cfg, RebaseOptions{Repo: "nm", Branch: "feature"})
+	if err != nil {
+		t.Fatalf("StartRebase: %v", err)
+	}
+	if rb.Branch() != "feature" {
+		t.Errorf("branch = %q, want the remote branch name unchanged by the prefix", rb.Branch())
+	}
+	branch, err := gitx.CurrentBranch(rb.Worktree())
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if branch != "feature" {
+		t.Errorf("the worktree is on %q, want the unprefixed feature", branch)
+	}
+}
