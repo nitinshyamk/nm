@@ -18,7 +18,11 @@ func enterDir(out io.Writer, dir string) error {
 	}
 	fmt.Fprintln(out, dir)
 	if !delivered {
-		fmt.Fprintf(out, "\n%s\n", shellint.Hint(currentShell()))
+		// A wrong guess only misaddresses a suggestion here, so an undetectable
+		// shell is not worth failing over: Hint falls back to bash. `nm shell
+		// setup` is the caller that must refuse to guess, because it writes.
+		shell, _ := shellint.Detect()
+		fmt.Fprintf(out, "\n%s\n", shellint.Hint(shell))
 	}
 	return nil
 }
