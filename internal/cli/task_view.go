@@ -64,6 +64,7 @@ func runTaskList(cmd *cobra.Command) error {
 			Actions: []tui.Action{
 				{Key: "enter", Name: "select", Help: "cd here"},
 				{Key: "o", Name: "open", Help: "open editor + agent"},
+				{Key: "a", Name: "agent", Help: "agent only, no editor"},
 				{Key: "d", Name: "delete", Help: "delete", Confirm: tui.ConfirmIfRisky, Verb: "Delete"},
 			},
 		})
@@ -82,7 +83,9 @@ func runTaskList(cmd *cobra.Command) error {
 		case "select":
 			return enterDir(out, entry.View.Task.Dir)
 		case "open":
-			return openTask(out, cfg, entry)
+			return openTask(out, cfg, entry, true)
+		case "agent":
+			return openTask(out, cfg, entry, false)
 		case "delete":
 			if err := deleteTask(out, cfg, entry); err != nil {
 				return err
@@ -216,12 +219,13 @@ func classBadge(c agent.Class) tui.BadgeKind {
 	}
 }
 
-// openTask opens the task in the editor and attaches to its agent, then leaves
-// the shell in the task directory.
-func openTask(out io.Writer, cfg config.Config, e taskEntry) error {
+// openTask attaches to the task's agent and leaves the shell in the task
+// directory, opening the editor first when withEditor is set. Without the
+// editor this is the `a` action: navigate and take the agent, nothing else.
+func openTask(out io.Writer, cfg config.Config, e taskEntry, withEditor bool) error {
 	dir := e.View.Task.Dir
 
-	if cfg.EditorCommand != "" {
+	if withEditor && cfg.EditorCommand != "" {
 		editor := exec.Command(cfg.EditorCommand, dir)
 		editor.Dir = dir
 		// The editor is a separate application: start it and move on rather
