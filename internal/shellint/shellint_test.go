@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -70,6 +71,12 @@ func TestInitScripts(t *testing.T) {
 	nu, _ := InitScript("nu")
 	if !strings.Contains(nu, "def --env") {
 		t.Error("the nushell script must use def --env or the cd will not escape the function")
+	}
+	// The behavioural guard for this is TestEveryWrapperForwardsFlagsAndHelp,
+	// which skips where nu is not installed -- so assert it cheaply here too.
+	// Without --wrapped, `nm task new repo -n name -p` is a nushell parse error.
+	if !strings.Contains(nu, "--wrapped") {
+		t.Error("the nushell script must use --wrapped or nushell rejects nm's own flags")
 	}
 	posix, _ := InitScript("bash")
 	if !strings.Contains(posix, "command nm") {
@@ -328,11 +335,37 @@ func runNu(t *testing.T, nu, body string) []string {
 	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(nu, script).Output()
+	cmd := exec.Command(nu, script)
+	// std/dirs keeps its stack in DIRS_LIST, which is inherited like any other
+	// environment variable. Running the suite from inside a nushell that has
+	// pushed directories would otherwise start the probe with a non-empty stack,
+	// and a test that asserts on depth would pass or fail by ambient luck.
+	cmd.Env = envWithout(os.Environ(), "DIRS_LIST", "DIRS_POSITION")
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("running the nu script: %v\n%s", err, out)
 	}
 	return strings.Split(strings.TrimSpace(string(out)), "\n")
+}
+
+// envWithout returns env with the named variables removed, matching the name
+// case-insensitively because Windows environment variables are.
+func envWithout(env []string, names ...string) []string {
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		drop := false
+		for _, name := range names {
+			if strings.EqualFold(key, name) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // nuScriptAt writes the integration script somewhere a nu probe can source it.
@@ -366,6 +399,9 @@ func TestNuWrapperPushesOntoTheDirectoryStack(t *testing.T) {
 	lines := runNu(t, nu, "$env.PATH = (['"+dir+"'] ++ $env.PATH)\n"+
 		"source '"+nuScriptAt(t)+"'\n"+
 		"cd '"+dir+"'\n"+
+		// The baseline is measured rather than assumed: depth is only meaningful
+		// as a delta, because std/dirs may start with entries already on it.
+		"print (dirs | length)\n"+
 		"nm task select x\n"+
 		"print $env.PWD\n"+
 		"print (dirs | length)\n"+
@@ -375,21 +411,33 @@ func TestNuWrapperPushesOntoTheDirectoryStack(t *testing.T) {
 		"dirs drop\n"+
 		"print $env.PWD\n")
 
-	if len(lines) != 4 {
-		t.Fatalf("expected four lines, got %v", lines)
+	if len(lines) != 5 {
+		t.Fatalf("expected five lines, got %v", lines)
 	}
-	if !samePathNu(t, lines[0], destination) {
-		t.Errorf("the jump landed in %q, want %q", lines[0], destination)
+	baseline, after, again := lines[0], lines[2], lines[3]
+
+	if !samePathNu(t, lines[1], destination) {
+		t.Errorf("the jump landed in %q, want %q", lines[1], destination)
 	}
-	if lines[1] != "2" {
-		t.Errorf("stack depth after one jump = %s, want 2: the jump was not pushed", lines[1])
+	if want := depthPlusOne(t, baseline); after != want {
+		t.Errorf("stack depth went %s -> %s, want %s: the jump was not pushed", baseline, after, want)
 	}
-	if lines[2] != "2" {
-		t.Errorf("stack depth after two jumps to the same place = %s, want 2", lines[2])
+	if again != after {
+		t.Errorf("a second jump to the same place took depth %s -> %s, want no change", after, again)
 	}
-	if !samePathNu(t, lines[3], dir) {
-		t.Errorf("dirs drop left the shell in %q, want %q", lines[3], dir)
+	if !samePathNu(t, lines[4], dir) {
+		t.Errorf("dirs drop left the shell in %q, want %q", lines[4], dir)
 	}
+}
+
+// depthPlusOne is what the stack depth should read after exactly one push.
+func depthPlusOne(t *testing.T, depth string) string {
+	t.Helper()
+	n, err := strconv.Atoi(strings.TrimSpace(depth))
+	if err != nil {
+		t.Fatalf("stack depth %q is not a number: %v", depth, err)
+	}
+	return strconv.Itoa(n + 1)
 }
 
 // TestNuCompleterParsesTheCobraProtocol covers what cobra does not generate: the
@@ -568,6 +616,117 @@ func TestPowerShellCompletionRequestsNeverChangeDirectory(t *testing.T) {
 			}
 			if !strings.Contains(strings.Join(lines, "\n"), "ran: "+arg) {
 				t.Errorf("the request never reached the binary:\n%v", lines)
+			}
+		})
+	}
+}
+
+// fakeNMForEveryShell writes a stand-in nm that reports exactly what it was
+// handed, in both forms a shell might resolve on this platform.
+//
+// One form is not enough on Windows: Git Bash looks for `nm` or `nm.exe` and
+// ignores `nm.bat`, while nushell and PowerShell need an extension in PATHEXT and
+// so ignore the extensionless file. Writing both lets each shell find the one it
+// can run -- and getting this wrong is not a visible failure, it just falls
+// through PATH to the real nm.
+func fakeNMForEveryShell(t *testing.T, dir string) {
+	t.Helper()
+	// For bash, including on Windows.
+	if err := os.WriteFile(filepath.Join(dir, "nm"),
+		[]byte("#!/bin/sh\necho \"GOT: $*\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		return
+	}
+	// For nushell and PowerShell.
+	if err := os.WriteFile(filepath.Join(dir, "nm.bat"),
+		[]byte("@echo off\r\necho GOT: %*\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEveryWrapperForwardsFlagsAndHelp is the regression guard for a bug that
+// shipped in the nushell wrapper.
+//
+// nushell's `def` validates what you typed against the signature, and a
+// signature of nothing but a rest parameter declares no flags -- so
+// `nm task new repo -n name -p` failed with "The nm command doesn't have flag
+// -n" before the body ever ran, and `nm --help` printed nushell's generated help
+// for the def instead of nm's. It is a parse error, so the wrapper could not even
+// catch it. `def --wrapped` is the fix.
+//
+// The tests that missed this only ever passed positional arguments, so this one
+// covers every shell rather than just the one that broke: the blind spot was the
+// shape of the test, not the shell.
+func TestEveryWrapperForwardsFlagsAndHelp(t *testing.T) {
+	// A flag with a value, a bare switch, and the help flag that a wrapper is
+	// most tempted to intercept.
+	const invocation = "nm task new repo -n name -p"
+
+	cases := []struct {
+		shell string
+		run   func(t *testing.T, dir, script, line string) string
+	}{
+		{"bash", func(t *testing.T, dir, script, line string) string {
+			t.Helper()
+			bash, err := exec.LookPath("bash")
+			if err != nil {
+				t.Skip("bash not available")
+			}
+			cmd := exec.Command(bash, "-c", "source '"+filepath.ToSlash(script)+"'\n"+line+"\n")
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("bash: %v\n%s", err, out)
+			}
+			return string(out)
+		}},
+		{"nu", func(t *testing.T, dir, script, line string) string {
+			t.Helper()
+			nu := nuAvailable(t)
+			return strings.Join(runNu(t, nu, "$env.PATH = (['"+dir+"'] ++ $env.PATH)\n"+
+				"source '"+script+"'\n"+line+"\n"), "\n")
+		}},
+		{"powershell", func(t *testing.T, dir, script, line string) string {
+			t.Helper()
+			ps := powershellAvailable(t)
+			return strings.Join(runPowerShell(t, ps, "$env:PATH = '"+dir+"' + ';' + $env:PATH\n"+
+				". '"+script+"'\n"+line+"\n"), "\n")
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.shell, func(t *testing.T) {
+			dir := t.TempDir()
+			fakeNMForEveryShell(t, dir)
+
+			script, err := InitScript(tc.shell)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ext := ".sh"
+			switch tc.shell {
+			case "nu":
+				ext = ".nu"
+			case "powershell":
+				ext = ".ps1"
+			}
+			path := filepath.Join(dir, "nm"+ext)
+			if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			got := tc.run(t, dir, path, invocation)
+			// Every token has to arrive, in order, at the real binary.
+			if !strings.Contains(got, "task new repo -n name -p") {
+				t.Errorf("%s wrapper did not forward the flags verbatim:\n%s", tc.shell, got)
+			}
+
+			// --help must reach nm rather than printing the wrapper's own help.
+			help := tc.run(t, dir, path, "nm --help")
+			if !strings.Contains(help, "GOT: --help") {
+				t.Errorf("%s wrapper swallowed --help instead of passing it to nm:\n%s", tc.shell, help)
 			}
 		})
 	}

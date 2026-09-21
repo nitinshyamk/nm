@@ -166,7 +166,15 @@ def "nu-complete nm" [context: string] {
 }
 
 # def --env lets the directory change escape the function and affect the caller.
-def --env nm [...args: string@"nu-complete nm"] {
+#
+# --wrapped is not optional: without it nushell validates what you typed against
+# this signature, and since the signature declares no flags, "nm task new repo -n
+# name -p" fails to parse with "The nm command doesn't have flag -n" before the
+# body ever runs. It is a parse error, so it cannot even be caught. --wrapped
+# tells nushell to stop interpreting flags and collect them into the rest
+# parameter, which also lets --help and -h reach nm instead of printing this
+# def's own generated help.
+def --env --wrapped nm [...args: string@"nu-complete nm"] {
     # Completion requests must not take the cd path (see the bash/zsh script).
     if ($args | length) > 0 and ($args | first) in ["__complete" "__completeNoDesc" "completion"] {
         ^nm ...$args
