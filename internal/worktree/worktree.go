@@ -63,6 +63,14 @@ func DirName(repo, name, hash string) string {
 	return fmt.Sprintf("%s%s%s-%s", repo, marker, name, hash)
 }
 
+// BranchName is the branch a worktree gets. The prefix is separate from
+// DirName's: a branch says whose it is on a shared remote, while a directory
+// name only has to be unique on this machine, so the repository marker stays out
+// of the branch and the prefix stays out of the directory.
+func BranchName(prefix, name, hash string) string {
+	return prefix + name + "-" + hash
+}
+
 // ParseDirName splits a directory name back into its repository and the
 // <name>-<hash> label. It reports false for directories nm did not create.
 func ParseDirName(dir string) (repo, label string, ok bool) {
@@ -132,7 +140,7 @@ func Create(cfg config.Config, opts Options) (Worktree, error) {
 		}
 	}
 
-	branch := name + "-" + hash
+	branch := BranchName(cfg.BranchPrefix, name, hash)
 	if gitx.BranchExists(repoDir, branch) {
 		return Worktree{}, fmt.Errorf("branch %s already exists in %s", branch, repoDir)
 	}

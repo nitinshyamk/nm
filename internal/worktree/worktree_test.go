@@ -297,3 +297,45 @@ func TestDirNameRoundTrip(t *testing.T) {
 		t.Error("ParseDirName accepted a directory nm did not create")
 	}
 }
+
+// TestCreateAppliesTheBranchPrefix checks the prefix on a real branch rather than
+// on the string helper: git has to accept the name, the worktree has to end up on
+// it, and the directory must not inherit the slash.
+func TestCreateAppliesTheBranchPrefix(t *testing.T) {
+	cfg := env(t, "nm")
+	cfg.BranchPrefix = "nitin/"
+
+	w, err := Create(cfg, Options{Repo: "nm", Name: "fix-tui"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if want := "nitin/fix-tui-" + w.Hash; w.Branch != want {
+		t.Errorf("Branch = %q, want %q", w.Branch, want)
+	}
+	// git accepted it and the worktree is really on it.
+	if branch, _ := gitx.CurrentBranch(w.Dir); branch != w.Branch {
+		t.Errorf("worktree is on branch %q, want %q", branch, w.Branch)
+	}
+	// The prefix is a branch convention, not a filesystem one: a / here would
+	// nest the worktree a level deeper than nm's discovery looks.
+	if want := filepath.Join(cfg.Worktrees(), "nm-id-fix-tui-"+w.Hash); w.Dir != want {
+		t.Errorf("Dir = %q, want %q: the prefix must not reach the directory", w.Dir, want)
+	}
+}
+
+// The default is empty, so an nm that has never been configured produces exactly
+// the branches it always did.
+func TestCreateWithoutAPrefixIsUnchanged(t *testing.T) {
+	cfg := env(t, "nm")
+	if cfg.BranchPrefix != "" {
+		t.Fatalf("BranchPrefix defaults to %q, want empty", cfg.BranchPrefix)
+	}
+
+	w, err := Create(cfg, Options{Repo: "nm", Name: "fix-tui"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if w.Branch != "fix-tui-"+w.Hash {
+		t.Errorf("Branch = %q, want the unprefixed fix-tui-%s", w.Branch, w.Hash)
+	}
+}

@@ -75,6 +75,11 @@ func (t Task) Dirs() []string {
 // DirName builds the on-disk name for a task.
 func DirName(name, hash string) string { return name + "-" + hash }
 
+// BranchName is the branch each of a task's repos gets. Only branches nm creates
+// are prefixed: `nm task rebase` starts from a branch that already exists on the
+// remote, and renaming that would break the link to it.
+func BranchName(prefix, name, hash string) string { return prefix + DirName(name, hash) }
+
 // Hash derives a task's hash from its name and repositories. Repository order
 // is normalized, so the same set of repos in any order yields the same hash.
 func Hash(length int, name string, repos []string) string {
@@ -127,7 +132,7 @@ func Create(cfg config.Config, opts Options) (t Task, err error) {
 	}
 
 	t = Task{Name: opts.Name, Hash: hash, CreatedAt: now(), Dir: dir}
-	branch := opts.Name + "-" + hash
+	branch := BranchName(cfg.BranchPrefix, opts.Name, hash)
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return Task{}, fmt.Errorf("creating %s: %w", dir, err)
