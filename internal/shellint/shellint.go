@@ -103,11 +103,19 @@ nm() {
   if [ -s "$nm_cd_file" ]; then
     local nm_target
     nm_target="$(cat "$nm_cd_file")"
+    # Ask this shell what it calls the target before comparing it to $PWD. nm
+    # writes an OS path, which is not always how the shell spells the same
+    # directory: under Git Bash nm writes C:\Users\... while $PWD holds
+    # /c/Users/..., and a plain string compare would never match, so every jump
+    # would push a duplicate. The same mismatch happens on Linux whenever the
+    # shell reached a directory through a symlink.
+    local nm_resolved
+    nm_resolved="$(cd "$nm_target" 2>/dev/null && pwd)" || nm_resolved=""
     # pushd, not cd: the directory you were in stays on the stack, so popd
     # brings you back. builtin, so a pushd alias or function cannot redirect
     # it. Already being there is not worth a stack entry.
-    if [ -d "$nm_target" ] && [ "$nm_target" != "$PWD" ]; then
-      builtin pushd "$nm_target" >/dev/null || builtin cd "$nm_target" || true
+    if [ -n "$nm_resolved" ] && [ "$nm_resolved" != "$PWD" ]; then
+      builtin pushd "$nm_resolved" >/dev/null || builtin cd "$nm_resolved" || true
     fi
   fi
   rm -f "$nm_cd_file"
