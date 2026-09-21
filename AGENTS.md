@@ -27,7 +27,7 @@ git add -A && git commit -m "..."
   make the gate pass. Fix the code.
 - If `format:check` fails, run `mise run format` and re-run the gate.
 - The same gate runs as a git pre-commit hook (`mise run hooks` installs it) and in
-  CI (`.github/workflows/ci.yml` runs `mise run ci`).
+  CI (`.github/workflows/ci.yml` runs `mise run ci` on Linux and Windows).
 - Commit when the gate is green rather than batching many unrelated changes into
   one commit.
 
@@ -73,6 +73,20 @@ internal/tui/        bubbletea models (list, confirm dialog, prompt editor)
   `--force`. The lease is what stops a rebase from discarding a commit someone
   else pushed in the meantime, and it is the only push the rebase agent is
   allowed to make.
+- A mise task's `run` is **one process invocation, never a shell script**. mise
+  hands inline `run` strings to `cmd.exe` on Windows and to a POSIX shell
+  everywhere else, so `$(...)`, `[ ... ]`, `||`, a pipe, or a coreutil such as
+  `mkdir -p` works on one platform and breaks on the other. When a task needs
+  more than one command: a computed value comes from a mise template, logic goes
+  into Go and is reached with `go run .`, and a pass/fail check uses the tool's
+  own flag rather than shell exit-code glue. `nm self install` exists because
+  the install task used to be bash.
+- Paths that came from `git` cannot be string-compared against paths built by
+  Go. git answers with forward slashes and long names, while `t.TempDir()`
+  returns `C:\Users\NITINS~1\...` on Windows; `filepath.EvalSymlinks` collapses
+  separator, 8.3 short name, and symlink at once. `samePath` in
+  `internal/gitx` and `shellPWD` in `internal/shellint` are the two helpers for
+  this — a bare `!=` on a path is a Windows failure waiting to happen.
 - `~/.nm.json` is user configuration. It is created at runtime, is never committed,
   and nothing in the repo should assume values other than the defaults in
   `internal/config`.
@@ -88,8 +102,8 @@ internal/tui/        bubbletea models (list, confirm dialog, prompt editor)
 | `mise run run -- <args>` | run from source |
 | `mise run test` | `go test ./...` |
 | `mise run lint` | golangci-lint |
-| `mise run format` | gofumpt write |
-| `mise run format:check` | gofumpt check (no writes) |
+| `mise run format` | gofumpt write, through `golangci-lint fmt` |
+| `mise run format:check` | gofumpt check, no writes (`golangci-lint fmt --diff`) |
 | `mise run pre-commit` | the full gate |
 | `mise run install` | build + install to `~/.local/bin` |
 | `mise run setup-shell` | add shell integration to your rc file |
