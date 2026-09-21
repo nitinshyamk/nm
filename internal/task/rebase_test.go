@@ -76,8 +76,10 @@ func TestStartRebaseChecksOutTheRemoteBranch(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(rb.Worktree(), "feature.txt")); err != nil {
 		t.Errorf("the worktree does not hold the branch's work: %v", err)
 	}
-	if _, err := os.Stat(rb.Task.Artifacts(cfg)); err != nil {
-		t.Errorf("no artifacts directory: %v", err)
+	for _, dir := range []string{rb.Task.Artifacts(cfg), rb.Task.Input(cfg), rb.Task.Scratch(cfg)} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("no %s directory: %v", filepath.Base(dir), err)
+		}
 	}
 	if _, err := Load(rb.Task.Dir); err != nil {
 		t.Errorf("the task record was not written: %v", err)

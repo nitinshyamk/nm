@@ -135,9 +135,19 @@ A task is a unit of work spanning one or more repositories:
 ~/projects/tasks/auth-9c31a0/
 ├── nm-9c31a0/               worktree, branch auth-9c31a0
 ├── home-management-system-9c31a0/
+├── input/                   what the task was given
+│   └── prompt.md            the prompt the agent started from
 ├── artifacts/               plans and output that never get committed
+├── scratch/                 throwaway working notes, mostly the agent's
 └── .nm-task.json            repos, branches, base commits, the agent
 ```
+
+`input/` is an organizing spot: nm writes `prompt.md` there when an agent
+starts, and anything else the task should be worked from — a spec, a screenshot,
+a log — can be dropped in beside it. `scratch/` is the opposite end: debugging
+output and half-finished work that nothing reads back, so it never has to be
+tidy and deleting the task does not warn about it. Only `artifacts/` counts as
+work worth flagging before a delete.
 
 ```bash
 nm task new nm home-management-system -n auth      # just the worktrees
@@ -288,6 +298,8 @@ keys nm does not recognize are left alone.
 | `worktrees_root` | `~/projects/worktrees` | where worktrees are created |
 | `tasks_root` | `~/projects/tasks` | where tasks are created |
 | `artifacts_dir` | `artifacts` | output directory inside each task |
+| `input_dir` | `input` | prompt and input assets inside each task |
+| `scratch_dir` | `scratch` | throwaway working directory inside each task |
 | `hash_length` | `6` | characters of hash in generated names |
 | `list_rows` | `8` | entries visible in the list pane |
 | `prompt_rows` | `10` | height of the prompt editor |

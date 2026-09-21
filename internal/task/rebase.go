@@ -157,8 +157,8 @@ func StartRebase(cfg config.Config, opts RebaseOptions) (rb Rebase, err error) {
 			Source:     repoDir,
 		}},
 	}
-	if err := os.MkdirAll(t.Artifacts(cfg), 0o755); err != nil {
-		return Rebase{}, fmt.Errorf("creating the artifacts directory: %w", err)
+	if err := t.makeDirs(cfg); err != nil {
+		return Rebase{}, err
 	}
 	if err := t.Save(); err != nil {
 		return Rebase{}, err

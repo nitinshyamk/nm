@@ -96,8 +96,10 @@ func TestCreateBuildsTheWholeTask(t *testing.T) {
 	}
 
 	artifacts := task.Artifacts(cfg)
-	if info, err := os.Stat(artifacts); err != nil || !info.IsDir() {
-		t.Errorf("artifacts directory missing: %v", err)
+	for _, dir := range []string{artifacts, task.Input(cfg), task.Scratch(cfg)} {
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			t.Errorf("%s is missing: %v", filepath.Base(dir), err)
+		}
 	}
 	if n, err := CountArtifacts(artifacts); err != nil || n != 0 {
 		t.Errorf("a new task has %d artifacts, want 0 (%v)", n, err)
@@ -164,6 +166,51 @@ func TestCreateRejectsBadInput(t *testing.T) {
 	}
 	if _, err := Create(cfg, Options{Name: "once", Repos: []string{"nm"}}); err == nil {
 		t.Error("Create built a second task with the same name and repos")
+	}
+}
+
+func TestSavePromptWritesTheInputPrompt(t *testing.T) {
+	cfg := env(t, "nm")
+	task, err := Create(cfg, Options{Name: "auth", Repos: []string{"nm"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(task.Input(cfg), PromptFile)
+
+	// A task with no prompt — no agent was started — leaves input/ empty.
+	if err := task.SavePrompt(cfg); err != nil {
+		t.Fatalf("SavePrompt with no prompt: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("SavePrompt wrote %s for a task with no prompt (%v)", PromptFile, err)
+	}
+
+	task.Prompt = "  Refactor auth across both repos.  "
+	if err := task.SavePrompt(cfg); err != nil {
+		t.Fatalf("SavePrompt: %v", err)
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	if got, want := string(blob), "Refactor auth across both repos.\n"; got != want {
+		t.Errorf("prompt file holds %q, want %q", got, want)
+	}
+
+	// A task created before these directories existed grows them rather than
+	// failing to write the prompt.
+	for _, dir := range []string{task.Input(cfg), task.Scratch(cfg)} {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := task.SavePrompt(cfg); err != nil {
+		t.Fatalf("SavePrompt after the directories were removed: %v", err)
+	}
+	for _, dir := range []string{task.Input(cfg), task.Scratch(cfg)} {
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			t.Errorf("SavePrompt did not recreate %s: %v", filepath.Base(dir), err)
+		}
 	}
 }
 
