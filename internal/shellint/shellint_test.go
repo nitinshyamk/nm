@@ -731,3 +731,86 @@ func TestEveryWrapperForwardsFlagsAndHelp(t *testing.T) {
 		})
 	}
 }
+
+// TestEveryWrapperIsTransparentInAPipeline is the regression guard for
+// `nm shell init nu | save --force ...` failing with "can't convert nothing to
+// string" -- the line nm's own nushell setup block tells users to run.
+//
+// A nushell def's output is its last expression, so the cd bookkeeping sitting
+// after the call swallowed nm's stdout and the pipe received nothing. bash and
+// PowerShell stream stdout through a function inherently, but they are checked
+// too: the point is that the wrapper must never be the reason a pipeline breaks.
+func TestEveryWrapperIsTransparentInAPipeline(t *testing.T) {
+	cases := []struct {
+		shell string
+		// count pipes nm's output into a line count and prints just that number.
+		count func(t *testing.T, dir, script string) string
+	}{
+		{"bash", func(t *testing.T, dir, script string) string {
+			t.Helper()
+			bash, err := exec.LookPath("bash")
+			if err != nil {
+				t.Skip("bash not available")
+			}
+			cmd := exec.Command(bash, "-c", "source '"+filepath.ToSlash(script)+"'\nnm config | wc -l\n")
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("bash: %v\n%s", err, out)
+			}
+			return strings.TrimSpace(string(out))
+		}},
+		{"nu", func(t *testing.T, dir, script string) string {
+			t.Helper()
+			nu := nuAvailable(t)
+			lines := runNu(t, nu, "$env.PATH = (['"+dir+"'] ++ $env.PATH)\n"+
+				"source '"+script+"'\n"+
+				"print (nm config | lines | length)\n")
+			return strings.TrimSpace(lines[len(lines)-1])
+		}},
+		{"powershell", func(t *testing.T, dir, script string) string {
+			t.Helper()
+			ps := powershellAvailable(t)
+			lines := runPowerShell(t, ps, "$env:PATH = '"+dir+"' + ';' + $env:PATH\n"+
+				". '"+script+"'\n"+
+				"Write-Output (nm config | Measure-Object -Line).Lines\n")
+			return strings.TrimSpace(lines[len(lines)-1])
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.shell, func(t *testing.T) {
+			dir := t.TempDir()
+			// A stand-in nm whose output is two known lines, so "the pipe got
+			// nothing" and "the pipe got the output" are distinguishable.
+			if err := os.WriteFile(filepath.Join(dir, "nm"),
+				[]byte("#!/bin/sh\necho LINE-ONE\necho LINE-TWO\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if runtime.GOOS == "windows" {
+				if err := os.WriteFile(filepath.Join(dir, "nm.bat"),
+					[]byte("@echo off\r\necho LINE-ONE\r\necho LINE-TWO\r\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			script, err := InitScript(tc.shell)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ext := map[string]string{"bash": ".sh", "nu": ".nu", "powershell": ".ps1"}[tc.shell]
+			path := filepath.Join(dir, "nm"+ext)
+			if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if got := tc.count(t, dir, path); got != "2" {
+				t.Errorf("%s wrapper piped %s lines, want 2: the pipeline lost nm's output", tc.shell, got)
+			}
+		})
+	}
+}
+
+// The cd-capable command list the nushell wrapper carries is checked against the
+// real cobra command tree by TestNushellWrapperClassifiesEveryTopLevelCommand in
+// internal/cli, which is where the command tree lives.

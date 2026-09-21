@@ -175,25 +175,35 @@ def "nu-complete nm" [context: string] {
 # parameter, which also lets --help and -h reach nm instead of printing this
 # def's own generated help.
 def --env --wrapped nm [...args: string@"nu-complete nm"] {
-    # Completion requests must not take the cd path (see the bash/zsh script).
-    if ($args | length) > 0 and ($args | first) in ["__complete" "__completeNoDesc" "completion"] {
+    # Only task and worktree can ask nm to move the shell. Everything else --
+    # config, shell, self, completion, help, and the __complete requests a tab
+    # press makes -- only writes to stdout, and has to reach the pipeline
+    # untouched.
+    #
+    # A nushell def's output is its last expression, so anything placed after the
+    # call swallows it: with the cd bookkeeping below in the way,
+    # "nm shell init nu | save --force ..." piped nothing and failed with "can't
+    # convert nothing to string". bash and PowerShell stream stdout through a
+    # function inherently and need no such split; this is nushell-specific.
+    #
+    # There is deliberately no "return" anywhere in here. An explicit bare return
+    # makes one path yield nothing, which is the same error by another name.
+    if ($args | length) == 0 or ($args | first) not-in ["task" "worktree"] {
         ^nm ...$args
-        return
-    }
-    let nm_cd_file = (mktemp --tmpdir nm-cd.XXXXXX)
-    try {
-        with-env { NM_CD_FILE: $nm_cd_file } { ^nm ...$args }
-    }
-    let nm_target = (try { open --raw $nm_cd_file | str trim } catch { "" })
-    rm --force $nm_cd_file
-    if ($nm_target | is-empty) or not ($nm_target | path exists) {
-        return
-    }
-    # path expand on both sides, for the reason the bash script canonicalizes:
-    # nm writes an OS path, which is not always how the shell spells the same
-    # directory, and a jump to where you already are is not worth a stack entry.
-    if ($nm_target | path expand) != ($env.PWD | path expand) {
-        dirs add $nm_target
+    } else {
+        let nm_cd_file = (mktemp --tmpdir nm-cd.XXXXXX)
+        try {
+            with-env { NM_CD_FILE: $nm_cd_file } { ^nm ...$args }
+        }
+        let nm_target = (try { open --raw $nm_cd_file | str trim } catch { "" })
+        rm --force $nm_cd_file
+        # path expand on both sides, for the reason the bash script canonicalizes:
+        # nm writes an OS path, which is not always how the shell spells the same
+        # directory, and a jump to where you already are is not worth a stack
+        # entry.
+        if ($nm_target | is-not-empty) and ($nm_target | path exists) and (($nm_target | path expand) != ($env.PWD | path expand)) {
+            dirs add $nm_target
+        }
     }
 }
 `

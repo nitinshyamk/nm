@@ -3,11 +3,13 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/nitinshyamk/nm/internal/config"
+	"github.com/nitinshyamk/nm/internal/shellint"
 )
 
 func TestWriteManagedBlockIsIdempotent(t *testing.T) {
@@ -166,4 +168,77 @@ func TestNuConfigPathHonorsXDGAwayFromWindows(t *testing.T) {
 	if got != filepath.Join("/custom/cfg", "nushell", "config.nu") {
 		t.Errorf("nuConfigPath = %q, want it under XDG_CONFIG_HOME", got)
 	}
+}
+
+// TestNushellWrapperClassifiesEveryTopLevelCommand keeps the nushell wrapper's
+// command list honest.
+//
+// nushell is the one shell whose wrapper has to know which commands can move the
+// shell: a def's output is its last expression, so putting the cd bookkeeping
+// after every call swallowed nm's stdout and broke `nm shell init nu | save ...`.
+// The wrapper therefore routes only the cd-capable commands through that path.
+//
+// The risk that buys is silent: add a command that calls enterDir, forget the
+// list, and its jumps quietly stop working. This fails instead, so a new command
+// forces the decision.
+func TestNushellWrapperClassifiesEveryTopLevelCommand(t *testing.T) {
+	// Commands that reach enterDir, and so must take the wrapper's cd path.
+	canCD := map[string]bool{"task": true, "worktree": true}
+	// Commands that only write to stdout and must stay pipeline-transparent.
+	outputOnly := map[string]bool{
+		"completion": true, "config": true, "help": true, "self": true, "shell": true,
+	}
+
+	routed := nuCDCommands(t)
+
+	for _, cmd := range newRootCmd().Commands() {
+		name := cmd.Name()
+		switch {
+		case canCD[name]:
+			if !routed[name] {
+				t.Errorf("`nm %s` can move the shell but the nushell wrapper does not route it "+
+					"through the cd path, so its jumps silently do nothing", name)
+			}
+		case outputOnly[name]:
+			if routed[name] {
+				t.Errorf("`nm %s` only writes to stdout, but the nushell wrapper routes it through "+
+					"the cd path, which swallows its output in a pipeline", name)
+			}
+		default:
+			t.Errorf("`nm %s` is new and unclassified: decide whether it can ask the shell to move "+
+				"(grep for enterDir), then add it to canCD or outputOnly here and to the "+
+				"command list in nuScript", name)
+		}
+	}
+
+	// And nothing unknown crept into the script's list.
+	for name := range routed {
+		if !canCD[name] {
+			t.Errorf("the nushell wrapper routes %q through the cd path, but it is not a "+
+				"cd-capable command", name)
+		}
+	}
+}
+
+// nuCDCommands reads the cd-capable command list out of the generated nushell
+// script, so the guard above compares against what the wrapper actually does
+// rather than a copy of it that could drift.
+func nuCDCommands(t *testing.T) map[string]bool {
+	t.Helper()
+	script, err := shellint.InitScript("nu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`not-in \[([^\]]*)\]`).FindStringSubmatch(script)
+	if match == nil {
+		t.Fatal("the nushell wrapper no longer has a `not-in [...]` command list; update this guard")
+	}
+	out := map[string]bool{}
+	for _, quoted := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(match[1], -1) {
+		out[quoted[1]] = true
+	}
+	if len(out) == 0 {
+		t.Fatal("the nushell wrapper's cd command list is empty, so no jump would ever happen")
+	}
+	return out
 }
