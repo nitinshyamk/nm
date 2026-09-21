@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/nitinshyamk/nm/internal/config"
 	"github.com/spf13/cobra"
@@ -38,13 +39,16 @@ func newSelfInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			dest, err := installBinary(from, cfg.Install())
+			dest, note, err := installBinary(from, cfg.Install())
 			if err != nil {
 				return err
 			}
 
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "installed %s\n", dest)
+			if note != "" {
+				fmt.Fprintf(out, "note: %s\n", note)
+			}
 			fmt.Fprintf(out, "\nFor 'nm worktree' / 'nm task' to change your shell's directory, add the\n"+
 				"shell integration to your rc file (or run: mise run setup-shell):\n\n"+
 				"  eval \"$(nm shell init bash)\"\n")
@@ -66,33 +70,128 @@ func builtBinary() string {
 	return filepath.Join("bin", name)
 }
 
-// installBinary copies src into dir and returns the path it wrote. An empty src
-// means the binary the build task produces. The copy lands on a temporary name
-// first and is renamed into place, so a failure partway through cannot leave a
-// truncated binary where a working one used to be.
-func installBinary(src, dir string) (string, error) {
+// installBinary copies src into dir and returns the path it wrote, plus a note
+// worth showing the user when one applies. An empty src means the binary the
+// build task produces. The copy lands on a temporary name first and is moved into
+// place, so a failure partway through cannot leave a truncated binary where a
+// working one used to be.
+//
+// The old binary is rotated aside rather than overwritten. Windows refuses to
+// replace a running executable -- `mise run install` while any nm is still
+// running failed with "Access is denied" -- but it does allow renaming one,
+// because the open handle follows the file rather than the name. So the swap is
+// rename-then-rename, and the rotated file is deleted afterwards if the process
+// holding it has exited.
+func installBinary(src, dir string) (dest, note string, err error) {
 	if src == "" {
 		src = builtBinary()
 	}
 	if _, err := os.Stat(src); err != nil {
-		return "", fmt.Errorf("no binary to install at %s (run `mise run build` first): %w", src, err)
+		return "", "", fmt.Errorf("no binary to install at %s (run `mise run build` first): %w", src, err)
 	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("creating %s: %w", dir, err)
+		return "", "", fmt.Errorf("creating %s: %w", dir, err)
 	}
-	dest := filepath.Join(dir, filepath.Base(src))
+	dest = filepath.Join(dir, filepath.Base(src))
 
 	staged := dest + ".new"
 	if err := copyFile(src, staged); err != nil {
-		return "", err
+		return "", "", err
 	}
+
+	rotated := ""
+	if _, err := os.Stat(dest); err == nil {
+		rotated, err = rotateAside(dest)
+		if err != nil {
+			_ = os.Remove(staged)
+			return "", "", err
+		}
+	}
+
 	if err := os.Rename(staged, dest); err != nil {
-		// Leaving the staged copy behind would be worse than the failure itself.
+		// Put the old binary back rather than leaving nothing installed.
+		if rotated != "" {
+			_ = os.Rename(rotated, dest)
+		}
 		_ = os.Remove(staged)
-		return "", fmt.Errorf("moving %s into place: %w", dest, err)
+		return "", "", fmt.Errorf("moving %s into place: %w", dest, err)
 	}
-	return dest, nil
+
+	if rotated != "" {
+		_ = os.Remove(rotated)
+	}
+	// Report whatever is actually still on disk, not just this run's rotation: a
+	// copy held by a long-running nm survives several installs, and an
+	// unexplained nm.exe.old sitting next to the binary invites a guess.
+	if leftovers := remainingRotations(dest); len(leftovers) > 0 {
+		note = fmt.Sprintf("a previous binary is still in use and left at %s; "+
+			"nm deletes it on a later install once that process has exited",
+			strings.Join(leftovers, ", "))
+	}
+	return dest, note, nil
+}
+
+// maxRotations bounds how many held copies of a binary nm will tolerate at once.
+// More than this means something is wrong that another rename will not fix.
+const maxRotations = 20
+
+// rotateAside moves dest out of the way and reports the name it now has.
+//
+// The name has to be unique rather than a fixed ".old": installing twice while
+// the same nm is still running leaves the first rotation held by that process,
+// and Windows will neither delete it nor let a second rename replace it, so a
+// fixed name makes every install after the first one fail.
+func rotateAside(dest string) (string, error) {
+	sweepRotations(dest)
+
+	for _, candidate := range rotationNames(dest) {
+		// Anything still here survived the sweep, so it is held and cannot be
+		// replaced. Try the next name rather than failing.
+		if _, err := os.Stat(candidate); err == nil {
+			continue
+		}
+		if err := os.Rename(dest, candidate); err != nil {
+			return "", fmt.Errorf("moving the previous %s aside: %w", dest, err)
+		}
+		return candidate, nil
+	}
+	return "", fmt.Errorf("%s has %d previous copies still in use; exit any running nm and try again",
+		dest, maxRotations)
+}
+
+// sweepRotations deletes rotations left by earlier installs. Each is best effort:
+// one still held by a running process stays until that process exits, and a later
+// install clears it.
+func sweepRotations(dest string) {
+	for _, path := range rotationNames(dest) {
+		_ = os.Remove(path)
+	}
+}
+
+// remainingRotations lists the rotations still on disk, by base name.
+func remainingRotations(dest string) []string {
+	var out []string
+	for _, path := range rotationNames(dest) {
+		if _, err := os.Stat(path); err == nil {
+			out = append(out, filepath.Base(path))
+		}
+	}
+	return out
+}
+
+// rotationNames is every name a rotated binary can occupy, in the order
+// rotateAside tries them.
+func rotationNames(dest string) []string {
+	out := make([]string, 0, maxRotations)
+	for i := range maxRotations {
+		if i == 0 {
+			out = append(out, dest+".old")
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s.old.%d", dest, i))
+	}
+	return out
 }
 
 func copyFile(src, dest string) error {
