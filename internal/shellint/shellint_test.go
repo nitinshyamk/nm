@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -280,4 +281,164 @@ func TestPosixWrapperPushesOntoTheDirectoryStack(t *testing.T) {
 	if got := strings.TrimSpace(depth[len(depth)-1]); got != "2" {
 		t.Errorf("the stack is %s deep after two jumps to the same place, want 2", got)
 	}
+}
+
+// nuAvailable skips when nushell is not installed. nu is not a build dependency,
+// so the suite must pass without it -- but where it exists these tests run the
+// real shell rather than asserting on the script's text.
+func nuAvailable(t *testing.T) string {
+	t.Helper()
+	nu, err := exec.LookPath("nu")
+	if err != nil {
+		t.Skip("nu not available")
+	}
+	return nu
+}
+
+// fakeNM writes a stand-in nm into dir, which callers prepend to PATH. nushell
+// resolves externals through PATH like any shell, so the stand-in has to be
+// executable the way the platform means it: a .bat on Windows, a shebang script
+// elsewhere.
+func fakeNM(t *testing.T, dir, body string) {
+	t.Helper()
+	name, content := "nm", "#!/bin/sh\n"+body
+	if runtime.GOOS == "windows" {
+		name, content = "nm.bat", "@echo off\r\n"+body
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// cdRequestBody is a stand-in nm that does what the real one does: write the
+// chosen directory to the file nm was handed.
+func cdRequestBody(target string) string {
+	if runtime.GOOS == "windows" {
+		return "echo " + target + "> \"%NM_CD_FILE%\"\r\n"
+	}
+	return "printf '%s\n' \"" + target + "\" > \"$NM_CD_FILE\"\n"
+}
+
+// runNu runs a nushell script and returns its stdout lines. Paths are embedded
+// in single-quoted nu strings by the callers, which are literal in nushell, so a
+// Windows path's backslashes need no escaping.
+func runNu(t *testing.T, nu, body string) []string {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "probe.nu")
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(nu, script).Output()
+	if err != nil {
+		t.Fatalf("running the nu script: %v\n%s", err, out)
+	}
+	return strings.Split(strings.TrimSpace(string(out)), "\n")
+}
+
+// nuScriptAt writes the integration script somewhere a nu probe can source it.
+func nuScriptAt(t *testing.T) string {
+	t.Helper()
+	script, err := InitScript("nu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "nm.nu")
+	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestNuWrapperPushesOntoTheDirectoryStack is the nushell half of the contract
+// the bash script has: the jump happens AND it is recorded, so "dirs drop" --
+// nushell's popd -- takes you back. The script used to test `which dirs` and
+// fall back to a bare cd, and on a default nushell that fallback always won: the
+// jump worked while nothing was ever pushed.
+func TestNuWrapperPushesOntoTheDirectoryStack(t *testing.T) {
+	nu := nuAvailable(t)
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "destination")
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeNM(t, dir, cdRequestBody(destination))
+
+	lines := runNu(t, nu, "$env.PATH = (['"+dir+"'] ++ $env.PATH)\n"+
+		"source '"+nuScriptAt(t)+"'\n"+
+		"cd '"+dir+"'\n"+
+		"nm task select x\n"+
+		"print $env.PWD\n"+
+		"print (dirs | length)\n"+
+		// Jumping to where you already are is not worth a stack entry.
+		"nm task select x\n"+
+		"print (dirs | length)\n"+
+		"dirs drop\n"+
+		"print $env.PWD\n")
+
+	if len(lines) != 4 {
+		t.Fatalf("expected four lines, got %v", lines)
+	}
+	if !samePathNu(t, lines[0], destination) {
+		t.Errorf("the jump landed in %q, want %q", lines[0], destination)
+	}
+	if lines[1] != "2" {
+		t.Errorf("stack depth after one jump = %s, want 2: the jump was not pushed", lines[1])
+	}
+	if lines[2] != "2" {
+		t.Errorf("stack depth after two jumps to the same place = %s, want 2", lines[2])
+	}
+	if !samePathNu(t, lines[3], dir) {
+		t.Errorf("dirs drop left the shell in %q, want %q", lines[3], dir)
+	}
+}
+
+// TestNuCompleterParsesTheCobraProtocol covers what cobra does not generate: the
+// completion nushell gets is nm's own parse of the __complete protocol, so the
+// parse is the thing worth testing.
+func TestNuCompleterParsesTheCobraProtocol(t *testing.T) {
+	nu := nuAvailable(t)
+	dir := t.TempDir()
+	// Real tab characters, which is what cobra emits between value and
+	// description, and a ":<directive>" line that is not a candidate.
+	if runtime.GOOS == "windows" {
+		fakeNM(t, dir, "echo list\tList every worktree\r\necho new\tCreate a worktree\r\necho :4\r\n")
+	} else {
+		fakeNM(t, dir, "printf 'list\tList every worktree\nnew\tCreate a worktree\n:4\n'\n")
+	}
+
+	lines := runNu(t, nu, "$env.PATH = (['"+dir+"'] ++ $env.PATH)\n"+
+		"source '"+nuScriptAt(t)+"'\n"+
+		"let got = (nu-complete nm 'nm worktree ')\n"+
+		"print ($got | length)\n"+
+		"print ($got | get value | str join ',')\n"+
+		"print ($got | get description | first)\n")
+
+	if len(lines) != 3 {
+		t.Fatalf("expected three lines, got %v", lines)
+	}
+	if lines[0] != "2" {
+		t.Errorf("got %s candidates, want 2: the :4 directive line is not a candidate", lines[0])
+	}
+	if lines[1] != "list,new" {
+		t.Errorf("candidates = %q, want list,new", lines[1])
+	}
+	if lines[2] != "List every worktree" {
+		t.Errorf("first description = %q, want the text after the tab", lines[2])
+	}
+}
+
+// samePathNu compares a path nushell printed against one Go built, for the
+// reason shellPWD exists: t.TempDir() hands back the 8.3 short form on Windows
+// while nushell reports the long one.
+func samePathNu(t *testing.T, got, want string) bool {
+	t.Helper()
+	resolve := func(path string) string {
+		t.Helper()
+		resolved, err := filepath.EvalSymlinks(strings.TrimSpace(path))
+		if err != nil {
+			t.Fatalf("resolving %q: %v", path, err)
+		}
+		return resolved
+	}
+	return resolve(got) == resolve(want)
 }
