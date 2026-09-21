@@ -12,8 +12,18 @@ concurrency:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Windows is not a courtesy: mise runs task `run` strings through cmd.exe
+    # there rather than a POSIX shell, and git checks files out with CRLF, so a
+    # Linux-only gate cannot see either. Both broke the build before this leg
+    # existed.
+    strategy:
+      # Report both legs. A Windows failure must not hide a Linux one.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # Windows runners are slower, and the task tests build real repositories.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: jdx/mise-action@v3
