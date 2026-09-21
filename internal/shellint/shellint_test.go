@@ -76,21 +76,39 @@ func TestInitScripts(t *testing.T) {
 	}
 }
 
-func TestPosixScriptIsValidShell(t *testing.T) {
+// TestBashZshScriptRunsUnderItsShells replaces a `sh -n` check that only ever
+// parsed the script. Parsing is not the question: pushd is an unknown *command*
+// to dash, not a syntax error, so the old check passed under a /bin/sh that
+// could never run what it had just approved. Running it, and asking for the
+// builtins it depends on, is what actually holds.
+func TestBashZshScriptRunsUnderItsShells(t *testing.T) {
 	script, err := InitScript("bash")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, shell := range []string{"bash", "zsh", "sh"} {
+	for _, shell := range []string{"bash", "zsh"} {
 		path, err := exec.LookPath(shell)
 		if err != nil {
 			continue
 		}
-		cmd := exec.Command(path, "-n")
-		cmd.Stdin = strings.NewReader(script)
+		// Sourcing defines the function; the type checks prove this shell has
+		// the builtins the wrapper reaches for.
+		probe := script + "\ntype nm >/dev/null && type pushd >/dev/null && type popd >/dev/null\n"
+		cmd := exec.Command(path, "-c", probe)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Errorf("%s rejected the integration script: %v\n%s", shell, err, out)
+			t.Errorf("%s cannot run the integration script: %v\n%s", shell, err, out)
 		}
+	}
+}
+
+// The script must not be offered to a shell that cannot run it. dash is the
+// /bin/sh on Debian and Ubuntu, and it has no pushd.
+func TestBashZshScriptIsNotOfferedToDash(t *testing.T) {
+	if _, err := InitScript("dash"); err == nil {
+		t.Error("InitScript accepted dash, which has no pushd")
+	}
+	if _, err := InitScript("sh"); err == nil {
+		t.Error("InitScript accepted sh, which may be dash")
 	}
 }
 

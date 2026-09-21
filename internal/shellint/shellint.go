@@ -50,8 +50,8 @@ func evalLine(shell string) string {
 }
 
 var scripts = map[string]string{
-	"bash": posixScript,
-	"zsh":  posixScript,
+	"bash": bashZshScript,
+	"zsh":  bashZshScript,
 	"nu":   nuScript,
 }
 
@@ -74,13 +74,16 @@ func InitScript(shell string) (string, error) {
 	return script, nil
 }
 
-// posixScript works in both bash and zsh.
+// bashZshScript works in bash and zsh, and in neither case is it POSIX: pushd,
+// popd, and local are all extensions. dash has no pushd at all, so the name
+// says bash and zsh rather than posix to stop the script being offered to a
+// shell that cannot run it.
 //
 // It moves with pushd rather than cd, so every jump nm makes is pushed onto
 // the directory stack and "popd" takes you back where you came from. A jump
 // to the directory you are already in is skipped, so the stack does not fill
 // up with the same entry.
-const posixScript = `# nm shell integration.
+const bashZshScript = `# nm shell integration.
 # nm cannot change this shell's directory itself, so it writes the directory it
 # selected to $NM_CD_FILE and this function performs the move.
 nm() {
@@ -132,7 +135,7 @@ nm() {
 const nuScript = `# nm shell integration.
 # def --env lets the directory change escape the function and affect the caller.
 def --env nm [...args] {
-    # Completion requests must not take the cd path (see the posix script).
+    # Completion requests must not take the cd path (see the bash/zsh script).
     if ($args | length) > 0 and ($args | first) in ["__complete" "__completeNoDesc" "completion"] {
         ^nm ...$args
         return

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/nitinshyamk/nm/internal/shellint"
@@ -58,7 +59,16 @@ func newShellSetupCmd() *cobra.Command {
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if shell == "" {
-				shell = currentShell()
+				detected, err := shellint.Detect()
+				if err != nil {
+					return err
+				}
+				shell = detected
+			}
+			// Accept what the user typed in whatever form: --shell pwsh.exe and
+			// --shell /bin/zsh both name a shell nm can write for.
+			if name := shellint.NormalizeShell(shell); name != "" {
+				shell = name
 			}
 			if _, err := shellint.InitScript(shell); err != nil {
 				return err
@@ -81,16 +91,9 @@ func newShellSetupCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&shell, "shell", "", "shell to configure (default: $SHELL)")
+	cmd.Flags().StringVar(&shell, "shell", "", "shell to configure (default: the shell nm was run from)")
 	_ = cmd.RegisterFlagCompletionFunc("shell", completeShells)
 	return cmd
-}
-
-func currentShell() string {
-	if s := os.Getenv("SHELL"); s != "" {
-		return filepath.Base(s)
-	}
-	return "bash"
 }
 
 func rcPath(shell string) (string, error) {
@@ -107,14 +110,30 @@ func rcPath(shell string) (string, error) {
 		}
 		return filepath.Join(home, ".zshrc"), nil
 	case "nu":
-		configHome := os.Getenv("XDG_CONFIG_HOME")
-		if configHome == "" {
-			configHome = filepath.Join(home, ".config")
-		}
-		return filepath.Join(configHome, "nushell", "config.nu"), nil
+		return nuConfigPath(home)
 	default:
 		return "", fmt.Errorf("unsupported shell %q", shell)
 	}
+}
+
+// nuConfigPath is where nushell reads config.nu, which is not XDG on Windows:
+// there it is %APPDATA%\nushell, and writing to ~/.config/nushell produced a
+// file nushell never reads, so nu setup silently did nothing on Windows.
+// $nu.default-config-dir is the authority; this mirrors it without shelling out
+// to nu, which may not even be on PATH when nm runs.
+func nuConfigPath(home string) (string, error) {
+	if runtime.GOOS == "windows" {
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(home, "AppData", "Roaming")
+		}
+		return filepath.Join(appData, "nushell", "config.nu"), nil
+	}
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		configHome = filepath.Join(home, ".config")
+	}
+	return filepath.Join(configHome, "nushell", "config.nu"), nil
 }
 
 // sourceLine is what the managed block contains: calls back into nm, so the

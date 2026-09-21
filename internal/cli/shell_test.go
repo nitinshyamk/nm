@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -121,5 +122,48 @@ func TestSettingValueUsesHomeExpansion(t *testing.T) {
 	}
 	if strings.HasPrefix(got, "~") {
 		t.Errorf("settingValue returned an unexpanded path: %q", got)
+	}
+}
+
+// nushell does not follow XDG on Windows: it reads %APPDATA%\nushell, and nm
+// used to write ~/.config/nushell there, producing a file nushell never loads.
+// That made `nm shell setup` report success while doing nothing at all.
+func TestNuConfigPathFollowsNushellNotXDG(t *testing.T) {
+	home := filepath.Join("C:", "Users", "someone")
+	if runtime.GOOS != "windows" {
+		home = "/home/someone"
+	}
+
+	got, err := nuConfigPath(home)
+	if err != nil {
+		t.Fatalf("nuConfigPath: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(got, filepath.Join("AppData", "Roaming", "nushell")) {
+			t.Errorf("nuConfigPath = %q, want it under %%APPDATA%%\nushell", got)
+		}
+		if strings.Contains(got, ".config") {
+			t.Errorf("nuConfigPath = %q, which is the XDG path nushell ignores on Windows", got)
+		}
+		return
+	}
+	if !strings.Contains(got, filepath.Join(".config", "nushell")) {
+		t.Errorf("nuConfigPath = %q, want it under ~/.config/nushell", got)
+	}
+}
+
+// XDG_CONFIG_HOME is honored away from Windows, where nushell does follow it.
+func TestNuConfigPathHonorsXDGAwayFromWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("nushell ignores XDG_CONFIG_HOME on Windows")
+	}
+	t.Setenv("XDG_CONFIG_HOME", "/custom/cfg")
+
+	got, err := nuConfigPath("/home/someone")
+	if err != nil {
+		t.Fatalf("nuConfigPath: %v", err)
+	}
+	if got != filepath.Join("/custom/cfg", "nushell", "config.nu") {
+		t.Errorf("nuConfigPath = %q, want it under XDG_CONFIG_HOME", got)
 	}
 }
