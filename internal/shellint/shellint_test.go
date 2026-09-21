@@ -442,3 +442,133 @@ func samePathNu(t *testing.T, got, want string) bool {
 	}
 	return resolve(got) == resolve(want)
 }
+
+// powershellAvailable skips where Windows PowerShell cannot run. 5.1 is the
+// edition that ships with Windows and the one nm writes a profile for.
+func powershellAvailable(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows PowerShell only runs on Windows")
+	}
+	ps, err := exec.LookPath("powershell")
+	if err != nil {
+		t.Skip("powershell not available")
+	}
+	return ps
+}
+
+// runPowerShell runs a script and returns its stdout lines. Callers embed paths
+// in single-quoted PowerShell strings, which are literal, so the backslashes in
+// a Windows path need no escaping.
+func runPowerShell(t *testing.T, ps, body string) []string {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "probe.ps1")
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(ps, "-NoProfile", "-NonInteractive", "-File", script).Output()
+	if err != nil {
+		t.Fatalf("running the PowerShell script: %v\n%s", err, out)
+	}
+	return strings.Split(strings.TrimSpace(string(out)), "\n")
+}
+
+func psScriptAt(t *testing.T) string {
+	t.Helper()
+	script, err := InitScript("powershell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "nm.ps1")
+	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestPowerShellWrapperPushesOntoTheDirectoryStack is the PowerShell half of the
+// same contract bash and nushell hold: the jump happens, it is recorded, and
+// Pop-Location takes you back.
+func TestPowerShellWrapperPushesOntoTheDirectoryStack(t *testing.T) {
+	ps := powershellAvailable(t)
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "destination")
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeNM(t, dir, cdRequestBody(destination))
+
+	lines := runPowerShell(t, ps, "$env:PATH = '"+dir+"' + ';' + $env:PATH\n"+
+		". '"+psScriptAt(t)+"'\n"+
+		"Set-Location '"+dir+"'\n"+
+		"nm task select x\n"+
+		"Write-Output (Get-Location).Path\n"+
+		"Write-Output (Get-Location -Stack).Count\n"+
+		// Jumping to where you already are is not worth a stack entry.
+		"nm task select x\n"+
+		"Write-Output (Get-Location -Stack).Count\n"+
+		"Pop-Location\n"+
+		"Write-Output (Get-Location).Path\n")
+
+	if len(lines) != 4 {
+		t.Fatalf("expected four lines, got %v", lines)
+	}
+	if !samePathNu(t, lines[0], destination) {
+		t.Errorf("the jump landed in %q, want %q", lines[0], destination)
+	}
+	if strings.TrimSpace(lines[1]) != "1" {
+		t.Errorf("stack depth after one jump = %s, want 1", lines[1])
+	}
+	// Resolve-Path and Convert-Path both keep an 8.3 short name while
+	// Get-Location reports the long one, so this is the regression guard for
+	// comparing the two as strings and pushing a duplicate every time.
+	if strings.TrimSpace(lines[2]) != "1" {
+		t.Errorf("stack depth after two jumps to the same place = %s, want 1", lines[2])
+	}
+	if !samePathNu(t, lines[3], dir) {
+		t.Errorf("Pop-Location left the shell in %q, want %q", lines[3], dir)
+	}
+}
+
+// The wrapper is a function named nm, so it has to reach the executable without
+// calling itself -- PowerShell's equivalent of bash's `command nm`.
+func TestPowerShellWrapperDoesNotRecurseIntoItself(t *testing.T) {
+	script, err := InitScript("powershell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, "-CommandType Application") {
+		t.Error("the wrapper must resolve nm as an Application, or it calls itself forever")
+	}
+}
+
+// A tab press must never move the shell, in every shell nm writes a wrapper for.
+func TestPowerShellCompletionRequestsNeverChangeDirectory(t *testing.T) {
+	ps := powershellAvailable(t)
+	dir := t.TempDir()
+	elsewhere := filepath.Join(dir, "elsewhere")
+	if err := os.Mkdir(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A hostile stand-in: it writes a cd request whatever it is asked, so only
+	// the wrapper's guard can keep the shell in place.
+	fakeNM(t, dir, "if defined NM_CD_FILE echo "+elsewhere+"> \"%NM_CD_FILE%\"\r\necho ran: %*\r\n")
+
+	for _, arg := range []string{"__complete", "__completeNoDesc", "completion"} {
+		t.Run(arg, func(t *testing.T) {
+			lines := runPowerShell(t, ps, "$env:PATH = '"+dir+"' + ';' + $env:PATH\n"+
+				". '"+psScriptAt(t)+"'\n"+
+				"Set-Location '"+dir+"'\n"+
+				"nm "+arg+" task select ''\n"+
+				"Write-Output (Get-Location).Path\n")
+
+			ended := lines[len(lines)-1]
+			if !samePathNu(t, ended, dir) {
+				t.Errorf("a %q request moved the shell to %q; it must stay in %q", arg, ended, dir)
+			}
+			if !strings.Contains(strings.Join(lines, "\n"), "ran: "+arg) {
+				t.Errorf("the request never reached the binary:\n%v", lines)
+			}
+		})
+	}
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/nitinshyamk/nm/internal/config"
 	"github.com/nitinshyamk/nm/internal/gitx"
+	"github.com/nitinshyamk/nm/internal/shellint"
 	"github.com/spf13/cobra"
 )
 
@@ -207,8 +208,10 @@ func TestCompleteShellsMatchesTheInitCommand(t *testing.T) {
 	if directive != noFiles {
 		t.Errorf("directive = %v, want no file completion", directive)
 	}
-	if strings.Join(got, ",") != "bash,nu,zsh" {
-		t.Errorf("completeShells = %v, want every shell nm can generate for", got)
+	// Derived from Shells() rather than hardcoded, so adding a shell cannot
+	// leave completion offering a stale list.
+	if want := strings.Join(shellint.Shells(), ","); strings.Join(got, ",") != want {
+		t.Errorf("completeShells = %v, want every shell nm can generate for (%s)", got, want)
 	}
 	if got, _ := completeShells(nil, nil, "z"); strings.Join(got, ",") != "zsh" {
 		t.Errorf("completeShells(\"z\") = %v, want zsh", got)

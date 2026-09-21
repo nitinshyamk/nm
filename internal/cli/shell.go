@@ -87,7 +87,7 @@ func newShellSetupCmd() *cobra.Command {
 			} else {
 				fmt.Fprintf(out, "added the nm block to %s\n", rc)
 			}
-			fmt.Fprintf(out, "open a new shell, or run: source %s\n", rc)
+			fmt.Fprintf(out, "open a new shell, or run: %s\n", reloadLine(shell, rc))
 			return nil
 		},
 	}
@@ -111,6 +111,11 @@ func rcPath(shell string) (string, error) {
 		return filepath.Join(home, ".zshrc"), nil
 	case "nu":
 		return nuConfigPath(home)
+	case "powershell":
+		// WindowsPowerShell, not PowerShell: this is the 5.1 profile, the one
+		// that ships with Windows. PowerShell 7 reads Documents\PowerShell.
+		return filepath.Join(documentsDir(home),
+			"WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"), nil
 	default:
 		return "", fmt.Errorf("unsupported shell %q", shell)
 	}
@@ -136,15 +141,32 @@ func nuConfigPath(home string) (string, error) {
 	return filepath.Join(configHome, "nushell", "config.nu"), nil
 }
 
+// reloadLine is how this shell re-reads its own rc file. PowerShell dot-sources
+// rather than using `source`, and telling a user to run a command their shell
+// does not have is a poor last impression of a setup that just worked.
+func reloadLine(shell, rc string) string {
+	if shell == "powershell" {
+		return ". " + rc
+	}
+	return "source " + rc
+}
+
 // sourceLine is what the managed block contains: calls back into nm, so the
 // wrapper and the completions always match the installed binary.
 func sourceLine(shell string) string {
-	if shell == "nu" {
+	switch shell {
+	case "nu":
 		// The nu script carries its own completer, because cobra generates no
 		// nushell completion -- so unlike bash and zsh there is no second
 		// `nm completion nu` to source.
 		return "nm shell init nu | save --force ($nu.default-config-dir | path join nm.nu)\n" +
 			"source ($nu.default-config-dir | path join nm.nu)"
+	case "powershell":
+		// Invoke-Expression over a piped string is PowerShell's eval. The
+		// completion line calls the wrapper the first line just defined, which
+		// forwards `completion` straight to the executable.
+		return "nm shell init powershell | Out-String | Invoke-Expression\n" +
+			"nm completion powershell | Out-String | Invoke-Expression"
 	}
 	return fmt.Sprintf("eval \"$(nm shell init %s)\"\nsource <(nm completion %s)", shell, shell)
 }
