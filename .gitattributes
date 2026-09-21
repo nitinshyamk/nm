@@ -1,0 +1,8 @@
+# Normalize text to LF in the repository and on checkout, on every platform.
+# gofmt and gofumpt emit LF, so a CRLF checkout makes every Go file read as
+# unformatted and `mise run format:check` fails for reasons that have nothing
+# to do with formatting. text=auto detects binary files on its own.
+#
+# A file that genuinely requires CRLF (a .bat or .cmd script) needs its own
+# `eol=crlf` line; nothing in the repository does today.
+* text=auto eol=lf
