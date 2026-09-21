@@ -188,6 +188,11 @@ def --env --wrapped nm [...args: string@"nu-complete nm"] {
     #
     # There is deliberately no "return" anywhere in here. An explicit bare return
     # makes one path yield nothing, which is the same error by another name.
+    #
+    # The trade-off: piping a task or worktree command is still not transparent,
+    # because the cd bookkeeping has to run after nm exits and nothing can come
+    # after it. Capturing nm's output instead would fix the pipe and break the
+    # TUI those commands open, which is the worse bargain.
     if ($args | length) == 0 or ($args | first) not-in ["task" "worktree"] {
         ^nm ...$args
     } else {
