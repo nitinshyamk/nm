@@ -284,6 +284,8 @@ stopped and is waiting on you.
 - `enter` cds into the task.
 - `o` opens the task directory in your editor *and* attaches to its agent in
   this terminal; when it exits you are left in the task directory.
+- `a` attaches to the agent without the editor, and still leaves you in the task
+  directory when it exits.
 - `d` deletes, after listing uncommitted work in every repo and flagging a
   non-empty `artifacts/`. A running agent is stopped first.
 
