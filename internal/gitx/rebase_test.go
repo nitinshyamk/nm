@@ -62,7 +62,7 @@ func TestRebaseLifecycle(t *testing.T) {
 	if branch, _ := CurrentBranch(wt); branch != "feature" {
 		t.Fatalf("the worktree is on %q, want feature", branch)
 	}
-	if held, ok := WorktreeForBranch(work, "feature"); !ok || held != wt {
+	if held, ok := WorktreeForBranch(work, "feature"); !ok || !samePath(t, held, wt) {
 		t.Errorf("WorktreeForBranch = %q, %v; want %q", held, ok, wt)
 	}
 

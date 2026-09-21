@@ -101,7 +101,10 @@ func TestExpand(t *testing.T) {
 func TestRepoPath(t *testing.T) {
 	cfg := Defaults()
 	cfg.ProjectsRoot = "/src"
-	if got := cfg.RepoPath("nm"); got != "/src/nm" {
-		t.Errorf("RepoPath = %q, want /src/nm", got)
+	// RepoPath joins with filepath, so the separator is the platform's: the
+	// expectation has to be built the same way rather than hardcoded as POSIX.
+	want := filepath.Join("/src", "nm")
+	if got := cfg.RepoPath("nm"); got != want {
+		t.Errorf("RepoPath = %q, want %q", got, want)
 	}
 }

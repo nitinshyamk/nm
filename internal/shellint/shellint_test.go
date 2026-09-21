@@ -126,13 +126,25 @@ func TestPosixWrapperActuallyChangesDirectory(t *testing.T) {
 		t.Fatalf("running the wrapper: %v", err)
 	}
 	got := strings.TrimSpace(string(out))
-	want, err := filepath.EvalSymlinks(destination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotResolved, err := filepath.EvalSymlinks(got); err != nil || gotResolved != want {
+	if want := shellPWD(t, bash, destination); got != want {
 		t.Errorf("shell ended in %q, want %q", got, want)
 	}
+}
+
+// shellPWD asks the shell what it calls dir. A path cannot be compared across
+// the two spellings of it: Go builds C:\Users\...\Temp\x, while bash reports
+// the same directory as /tmp/x under Git Bash. Letting one shell spell both
+// sides keeps the comparison meaningful on every platform, and needs no
+// runtime.GOOS branch.
+func shellPWD(t *testing.T, bash, dir string) string {
+	t.Helper()
+	// Forward slashes: a Windows path inside a double-quoted bash string would
+	// otherwise carry backslashes that bash may read as escapes.
+	out, err := exec.Command(bash, "-c", `cd "`+filepath.ToSlash(dir)+`" && pwd`).Output()
+	if err != nil {
+		t.Fatalf("asking the shell how it spells %q: %v", dir, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // TestCompletionRequestsNeverChangeDirectory is the guard for the sharpest
@@ -175,17 +187,9 @@ func TestCompletionRequestsNeverChangeDirectory(t *testing.T) {
 			}
 
 			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			ended := lines[len(lines)-1]
-			want, err := filepath.EvalSymlinks(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := filepath.EvalSymlinks(ended)
-			if err != nil {
-				t.Fatalf("resolving %q: %v", ended, err)
-			}
-			if got != want {
-				t.Errorf("a %q request moved the shell to %q; it must stay in %q", arg, got, want)
+			ended := strings.TrimSpace(lines[len(lines)-1])
+			if want := shellPWD(t, bash, dir); ended != want {
+				t.Errorf("a %q request moved the shell to %q; it must stay in %q", arg, ended, want)
 			}
 			if !strings.Contains(string(out), "ran: "+arg) {
 				t.Errorf("the request never reached the binary:\n%s", out)
@@ -241,24 +245,15 @@ func TestPosixWrapperPushesOntoTheDirectoryStack(t *testing.T) {
 		return strings.Split(strings.TrimSpace(string(out)), "\n")
 	}
 
-	sameDir := func(got, want string) bool {
-		a, err := filepath.EvalSymlinks(got)
-		if err != nil {
-			return false
-		}
-		b, err := filepath.EvalSymlinks(want)
-		return err == nil && a == b
-	}
-
 	lines := run("nm task select x >/dev/null\npwd\npopd >/dev/null\npwd\n")
 	if len(lines) != 2 {
 		t.Fatalf("expected two paths, got %v", lines)
 	}
-	if !sameDir(lines[0], destination) {
-		t.Errorf("the jump landed in %q, want %q", lines[0], destination)
+	if want := shellPWD(t, bash, destination); strings.TrimSpace(lines[0]) != want {
+		t.Errorf("the jump landed in %q, want %q", lines[0], want)
 	}
-	if !sameDir(lines[1], dir) {
-		t.Errorf("popd left the shell in %q, want the directory it started in, %q", lines[1], dir)
+	if want := shellPWD(t, bash, dir); strings.TrimSpace(lines[1]) != want {
+		t.Errorf("popd left the shell in %q, want the directory it started in, %q", lines[1], want)
 	}
 
 	// Jumping to where you already are is not worth a stack entry, or popd

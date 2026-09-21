@@ -1,11 +1,23 @@
 [tools]
 go = "1.25"
 golangci-lint = "latest"
-gofumpt = "latest"
+
+# Every task's `run` below is a single process invocation, never a shell
+# script. mise hands inline `run` strings to cmd.exe on Windows and to a POSIX
+# shell everywhere else, so anything relying on $(...), [ ... ], ||, a pipe, or
+# a coreutil such as mkdir -p works on one platform and silently breaks on the
+# other. Launching one process is the one thing every shell does identically.
+#
+# When a task needs more than that:
+#   - a computed value      -> a mise template, evaluated by mise, not a shell
+#   - logic or file work    -> Go, reached with `go run .`
+#   - a pass/fail check     -> the tool's own flag, not shell exit-code glue
 
 [tasks.build]
 description = "Build the nm binary into bin/"
-run = 'go build -ldflags "-X github.com/nitinshyamk/nm/internal/cli.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o bin/nm .'
+# -o bin/ rather than -o bin/nm: Go then names the output nm on Unix and
+# nm.exe on Windows, where an extensionless file is not executable.
+run = "go build -o bin/ ."
 
 [tasks.run]
 description = "Run nm from source (mise run run -- worktree new repo name)"
@@ -19,41 +31,26 @@ run = "go test ./..."
 description = "Run golangci-lint"
 run = "golangci-lint run"
 
+# format and format:check are the same engine (.golangci.yml enables gofumpt
+# under `formatters`), so the two can never disagree about what is formatted.
 [tasks.format]
 description = "Format all Go source with gofumpt"
-run = "gofumpt -w ."
+run = "golangci-lint fmt"
 
 [tasks."format:check"]
 description = "Fail if any Go source is unformatted"
-run = '''
-unformatted="$(gofumpt -l .)"
-if [ -n "$unformatted" ]; then
-  echo "These files need formatting (run 'mise run format'):"
-  echo "$unformatted"
-  exit 1
-fi
-'''
+run = "golangci-lint fmt --diff"
 
 [tasks.install]
 description = "Build nm and install it into install_dir from ~/.nm.json"
 depends = ["build"]
-run = '''
-# The freshly built binary knows where ~/.nm.json says to install it.
-dir="$(./bin/nm config get install_dir)"
-mkdir -p "$dir"
-install -m 0755 bin/nm "$dir/nm"
-echo "installed $dir/nm"
-echo
-echo "For 'nm worktree' / 'nm task' to change your shell's directory, add the"
-echo "shell integration to your rc file (or run: mise run setup-shell):"
-echo
-echo '  eval "$(nm shell init bash)"'
-'''
+# `nm self install` reads install_dir from ~/.nm.json and copies the binary
+# built above. Go does the work that mkdir -p and install -m used to.
+run = "go run . self install"
 
 [tasks.setup-shell]
 description = "Append the nm shell integration to your shell rc file (idempotent)"
-depends = ["build"]
-run = "./bin/nm shell setup"
+run = "go run . shell setup"
 
 [tasks.hooks]
 description = "Install the git pre-commit hook that runs the pre-commit gate"

@@ -33,6 +33,24 @@ func isolate(t *testing.T) {
 	}
 }
 
+// samePath reports whether two spellings name the same directory. A path that
+// came from git cannot be string-compared against one built by Go: git answers
+// with forward slashes and the long form of every name, while t.TempDir() hands
+// back C:\Users\NITINS~1\... on Windows. EvalSymlinks collapses the separator,
+// the 8.3 short name, and any symlink in the way, all at once.
+func samePath(t *testing.T, got, want string) bool {
+	t.Helper()
+	resolve := func(path string) string {
+		t.Helper()
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			t.Fatalf("resolving %q: %v", path, err)
+		}
+		return resolved
+	}
+	return resolve(got) == resolve(want)
+}
+
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, err := Run(dir, args...)
@@ -181,7 +199,7 @@ func TestWorktreeLifecycleAndStatus(t *testing.T) {
 	if !IsRepo(wt) {
 		t.Fatal("the new worktree is not a git working tree")
 	}
-	if main, err := MainWorktree(wt); err != nil || main != local {
+	if main, err := MainWorktree(wt); err != nil || !samePath(t, main, local) {
 		t.Errorf("MainWorktree = %q, %v; want %q", main, err, local)
 	}
 
