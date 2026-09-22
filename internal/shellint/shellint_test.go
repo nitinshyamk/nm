@@ -396,18 +396,22 @@ func TestNuWrapperPushesOntoTheDirectoryStack(t *testing.T) {
 	}
 	fakeNM(t, dir, cdRequestBody(destination))
 
+	// How deep the ring already is before the jump is nushell's business, not
+	// nm's: 0.109 seeds std/dirs with the home directory as well as the current
+	// one, where older versions started from just the current one. Asserting the
+	// absolute depth made this fail on a nushell upgrade while the script was
+	// doing exactly the right thing, so the assertion is on what the jump
+	// changes -- one entry per move, none for a move to where you already are.
 	lines := runNu(t, nu, "$env.PATH = (['"+dir+"'] ++ $env.PATH)\n"+
 		"source '"+nuScriptAt(t)+"'\n"+
 		"cd '"+dir+"'\n"+
-		// The baseline is measured rather than assumed: depth is only meaningful
-		// as a delta, because std/dirs may start with entries already on it.
-		"print (dirs | length)\n"+
+		"let before = (dirs | length)\n"+
 		"nm task select x\n"+
 		"print $env.PWD\n"+
-		"print (dirs | length)\n"+
+		"print ((dirs | length) - $before)\n"+
 		// Jumping to where you already are is not worth a stack entry.
 		"nm task select x\n"+
-		"print (dirs | length)\n"+
+		"print ((dirs | length) - $before)\n"+
 		"dirs drop\n"+
 		"print $env.PWD\n")
 
@@ -419,11 +423,11 @@ func TestNuWrapperPushesOntoTheDirectoryStack(t *testing.T) {
 	if !samePathNu(t, lines[1], destination) {
 		t.Errorf("the jump landed in %q, want %q", lines[1], destination)
 	}
-	if want := depthPlusOne(t, baseline); after != want {
-		t.Errorf("stack depth went %s -> %s, want %s: the jump was not pushed", baseline, after, want)
+	if lines[1] != "1" {
+		t.Errorf("one jump added %s stack entries, want 1: the jump was not pushed", lines[1])
 	}
-	if again != after {
-		t.Errorf("a second jump to the same place took depth %s -> %s, want no change", after, again)
+	if lines[2] != "1" {
+		t.Errorf("two jumps to the same place added %s stack entries, want 1", lines[2])
 	}
 	if !samePathNu(t, lines[4], dir) {
 		t.Errorf("dirs drop left the shell in %q, want %q", lines[4], dir)

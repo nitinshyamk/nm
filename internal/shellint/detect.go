@@ -3,7 +3,6 @@ package shellint
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -71,9 +70,15 @@ func NormalizeShell(nameOrPath string) string {
 	if name == "" {
 		return ""
 	}
-	// filepath.Base does not split on / when running on Windows, and $SHELL
-	// holds a forward-slash path even there, so settle the separator first.
-	name = filepath.Base(filepath.FromSlash(name))
+	// Both separators have to be settled here, because the spelling comes from
+	// the shell rather than from the host: $SHELL holds a forward-slash path even
+	// on Windows, and a Windows process table hands back a backslash one that a
+	// Linux machine may still be asked about. filepath only splits on the host's
+	// separator -- filepath.FromSlash is a no-op away from Windows -- so the last
+	// index of either separator is what makes this answer the same on both.
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
 	name = strings.ToLower(strings.TrimSuffix(name, ".exe"))
 
 	switch name {
