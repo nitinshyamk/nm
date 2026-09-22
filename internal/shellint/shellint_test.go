@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -415,13 +414,11 @@ func TestNuWrapperPushesOntoTheDirectoryStack(t *testing.T) {
 		"dirs drop\n"+
 		"print $env.PWD\n")
 
-	if len(lines) != 5 {
-		t.Fatalf("expected five lines, got %v", lines)
+	if len(lines) != 4 {
+		t.Fatalf("expected four lines, got %v", lines)
 	}
-	baseline, after, again := lines[0], lines[2], lines[3]
-
-	if !samePathNu(t, lines[1], destination) {
-		t.Errorf("the jump landed in %q, want %q", lines[1], destination)
+	if !samePathNu(t, lines[0], destination) {
+		t.Errorf("the jump landed in %q, want %q", lines[0], destination)
 	}
 	if lines[1] != "1" {
 		t.Errorf("one jump added %s stack entries, want 1: the jump was not pushed", lines[1])
@@ -429,19 +426,9 @@ func TestNuWrapperPushesOntoTheDirectoryStack(t *testing.T) {
 	if lines[2] != "1" {
 		t.Errorf("two jumps to the same place added %s stack entries, want 1", lines[2])
 	}
-	if !samePathNu(t, lines[4], dir) {
-		t.Errorf("dirs drop left the shell in %q, want %q", lines[4], dir)
+	if !samePathNu(t, lines[3], dir) {
+		t.Errorf("dirs drop left the shell in %q, want %q", lines[3], dir)
 	}
-}
-
-// depthPlusOne is what the stack depth should read after exactly one push.
-func depthPlusOne(t *testing.T, depth string) string {
-	t.Helper()
-	n, err := strconv.Atoi(strings.TrimSpace(depth))
-	if err != nil {
-		t.Fatalf("stack depth %q is not a number: %v", depth, err)
-	}
-	return strconv.Itoa(n + 1)
 }
 
 // TestNuCompleterParsesTheCobraProtocol covers what cobra does not generate: the
