@@ -2,14 +2,13 @@ package workplan
 
 import (
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/nitinshyamk/nm/internal/config"
+	"github.com/nitinshyamk/nm/internal/filecopy"
 )
 
 // nameOK rejects names that would make a confusing directory name.
@@ -98,87 +97,9 @@ func Define(cfg config.Config, opts Options) (Workplan, error) {
 
 // CopyArtifacts copies a file, or the contents of a directory, into the
 // workplan's artifacts directory.
-//
-// A file lands under its own name; a directory's contents land directly in
-// artifacts/ rather than under an extra level named after the source, which is
-// what makes `define -a ./design` and `define -a ./design/plan.md` produce
-// comparably shaped results.
 func (w Workplan) CopyArtifacts(src string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return fmt.Errorf("reading artifacts from %s: %w", src, err)
-	}
-	if err := os.MkdirAll(w.Artifacts(), 0o755); err != nil {
-		return fmt.Errorf("creating %s: %w", w.Artifacts(), err)
-	}
-
-	if !info.IsDir() {
-		return copyFile(src, filepath.Join(w.Artifacts(), filepath.Base(src)))
-	}
-	return copyTree(src, w.Artifacts())
-}
-
-// copyTree copies the contents of src into dst, creating directories as it goes.
-func copyTree(src, dst string) error {
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", src, err)
-	}
-	for _, e := range entries {
-		from, to := filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())
-		if e.IsDir() {
-			if err := os.MkdirAll(to, 0o755); err != nil {
-				return fmt.Errorf("creating %s: %w", to, err)
-			}
-			if err := copyTree(from, to); err != nil {
-				return err
-			}
-			continue
-		}
-		// Anything that is not a regular file or a directory — a symlink, a
-		// socket — is skipped rather than followed. Artifacts are documents.
-		if !e.Type().IsRegular() {
-			continue
-		}
-		if err := copyFile(from, to); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// copyFile copies one file, refusing to overwrite an existing destination.
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", src, err)
-	}
-	// Closing a file that was only read cannot lose data, so the error says
-	// nothing a caller could act on. The write side below is checked, because
-	// there a failed close means bytes never reached the disk.
-	defer func() { _ = in.Close() }()
-
-	// O_EXCL is the refusal: it is what makes a second `define -a` report a
-	// collision rather than quietly replacing the context tasks were scoped
-	// against.
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		if os.IsExist(err) {
-			return fmt.Errorf("%s already exists; remove it to replace it", dst)
-		}
-		return fmt.Errorf("writing %s: %w", dst, err)
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		// The copy error is the one worth reporting; a close failure on a file
-		// that is already being abandoned adds nothing. Remove the partial file
-		// so a later run is not blocked by the half-written copy O_EXCL would
-		// then refuse.
-		_ = out.Close()
-		_ = os.Remove(dst)
-		return fmt.Errorf("writing %s: %w", dst, err)
-	}
-	if err := out.Close(); err != nil {
-		return fmt.Errorf("writing %s: %w", dst, err)
+	if err := filecopy.Into(src, w.Artifacts()); err != nil {
+		return fmt.Errorf("copying artifacts: %w", err)
 	}
 	return nil
 }
