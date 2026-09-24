@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/nitinshyamk/nm/internal/config"
+	"github.com/nitinshyamk/nm/internal/task"
+	"github.com/nitinshyamk/nm/internal/workplan"
 )
 
 // runNM executes the real command tree against a temporary configuration, so a
@@ -355,5 +357,78 @@ func TestTaskNewWithTaskfileAndNoAgent(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
 			t.Errorf("%s is missing: %v", rel, err)
 		}
+	}
+}
+
+// The orchestrator's --json output is what a poller reads every minute, so its
+// shape is asserted rather than left to whatever the internal types marshal to.
+func TestWorkplanExecuteJSONShape(t *testing.T) {
+	isolatedConfig(t)
+	if _, err := runNM(t, "workplan", "define", "-n", "p"); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runNM(t, "workplan", "execute", "p", "--json")
+	if err != nil {
+		// gh may be absent or unauthenticated in a sandbox; that is not what this
+		// test is about.
+		t.Skipf("execute needs gh: %v", err)
+	}
+
+	var payload struct {
+		Transitions []map[string]any `json:"transitions"`
+		Escalations []map[string]any `json:"escalations"`
+		Refining    []string         `json:"refining"`
+		Waiting     []string         `json:"waiting"`
+		Problems    []string         `json:"problems"`
+		Quiet       bool             `json:"quiet"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("execute --json did not emit JSON: %v\n%s", err, out)
+	}
+	// Every list is present and empty rather than null, so a reader can iterate
+	// without checking first.
+	for name, list := range map[string]int{
+		"transitions": len(payload.Transitions),
+		"escalations": len(payload.Escalations),
+		"refining":    len(payload.Refining),
+	} {
+		if list != 0 {
+			t.Errorf("%s = %d on an empty workplan, want 0", name, list)
+		}
+	}
+	if !strings.Contains(out, `"refining": []`) {
+		t.Errorf("an empty list was emitted as null rather than []:\n%s", out)
+	}
+	if !payload.Quiet {
+		t.Errorf("an empty workplan was not reported as quiet:\n%s", out)
+	}
+}
+
+func TestWorkplanResolveWithNothingToDeliver(t *testing.T) {
+	isolatedConfig(t)
+	if _, err := runNM(t, "workplan", "define", "-n", "p"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runNM(t, "workplan", "resolve", "p")
+	if err != nil {
+		t.Fatalf("resolve: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "nothing to deliver") {
+		t.Errorf("resolve should say there was nothing to do:\n%s", out)
+	}
+}
+
+// The marker filenames are a contract between package task, which writes them,
+// and package workplan, which reads them. This is the one place that can see both.
+func TestMarkerNamesAgreeAcrossPackages(t *testing.T) {
+	if task.ReadyFile != "ready-to-review.md" {
+		t.Errorf("ReadyFile = %q; the skills and the design both name ready-to-review.md", task.ReadyFile)
+	}
+	if task.RefiningFile != "refining.md" {
+		t.Errorf("RefiningFile = %q", task.RefiningFile)
+	}
+	if workplan.ResolutionSuffix != "-resolution.md" {
+		t.Errorf("ResolutionSuffix = %q; the design specifies <timestamp>-resolution.md", workplan.ResolutionSuffix)
 	}
 }

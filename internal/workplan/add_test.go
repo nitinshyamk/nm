@@ -9,7 +9,7 @@ import (
 func TestAddTaskWritesTheFileAndTheEscalationDirectory(t *testing.T) {
 	cfg, w := planWith(t)
 
-	if err := w.AddTask(task("01-a")); err != nil {
+	if err := w.AddTask(def("01-a")); err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
 
@@ -27,11 +27,11 @@ func TestAddTaskWritesTheFileAndTheEscalationDirectory(t *testing.T) {
 
 func TestAddTaskRefusesADuplicateID(t *testing.T) {
 	_, w := planWith(t)
-	if err := w.AddTask(task("01-a")); err != nil {
+	if err := w.AddTask(def("01-a")); err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
 
-	err := w.AddTask(task("01-a"))
+	err := w.AddTask(def("01-a"))
 	if err == nil {
 		t.Fatal("AddTask overwrote an existing task")
 	}
@@ -44,9 +44,9 @@ func TestAddTaskRefusesADuplicateID(t *testing.T) {
 // same id in two states and make its state ambiguous.
 func TestAddTaskRefusesAnIDThatIsInAnotherState(t *testing.T) {
 	_, w := planWith(t)
-	writeTask(t, w, Review, task("01-a"))
+	writeTask(t, w, Review, def("01-a"))
 
-	err := w.AddTask(task("01-a"))
+	err := w.AddTask(def("01-a"))
 	if err == nil {
 		t.Fatal("AddTask added a task that is already in review")
 	}

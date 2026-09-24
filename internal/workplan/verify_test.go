@@ -56,7 +56,7 @@ func makeCheckout(t *testing.T, cfg config.Config, name string) {
 
 // task is a valid definition with the given id and predecessors, for graph tests
 // where only the edges matter.
-func task(id string, preds ...string) Task {
+func def(id string, preds ...string) Task {
 	return Task{
 		ID:                 id,
 		Predecessors:       preds,
@@ -67,9 +67,9 @@ func task(id string, preds ...string) Task {
 
 func TestVerifyAcceptsASoundWorkplan(t *testing.T) {
 	cfg, w := planWith(t,
-		task("01-first"),
-		task("02-second", "01-first"),
-		task("03-third", "01-first", "02-second"),
+		def("01-first"),
+		def("02-second", "01-first"),
+		def("03-third", "01-first", "02-second"),
 	)
 
 	report := Verify(cfg, w)
@@ -82,7 +82,7 @@ func TestVerifyAcceptsASoundWorkplan(t *testing.T) {
 }
 
 func TestVerifyFindsAMissingPredecessor(t *testing.T) {
-	cfg, w := planWith(t, task("02-second", "01-never-written"))
+	cfg, w := planWith(t, def("02-second", "01-never-written"))
 
 	report := Verify(cfg, w)
 	if report.OK() {
@@ -137,19 +137,19 @@ func TestVerifyNamesTheCycle(t *testing.T) {
 		want  []string
 	}{
 		"a two-cycle": {
-			tasks: []Task{task("01-a", "02-b"), task("02-b", "01-a")},
+			tasks: []Task{def("01-a", "02-b"), def("02-b", "01-a")},
 			want:  []string{"01-a", "02-b"},
 		},
 		"a three-cycle": {
-			tasks: []Task{task("01-a", "03-c"), task("02-b", "01-a"), task("03-c", "02-b")},
+			tasks: []Task{def("01-a", "03-c"), def("02-b", "01-a"), def("03-c", "02-b")},
 			want:  []string{"01-a", "02-b", "03-c"},
 		},
 		"a cycle hanging off a sound chain": {
 			tasks: []Task{
-				task("01-a"),
-				task("02-b", "01-a", "04-d"),
-				task("03-c", "02-b"),
-				task("04-d", "03-c"),
+				def("01-a"),
+				def("02-b", "01-a", "04-d"),
+				def("03-c", "02-b"),
+				def("04-d", "03-c"),
 			},
 			want: []string{"02-b", "03-c", "04-d"},
 		},
@@ -204,7 +204,7 @@ func TestVerifyFindsACycleSpanningTheWholeGraph(t *testing.T) {
 	for i := range n {
 		id := fmt.Sprintf("%02d-t%d", i, i)
 		pred := fmt.Sprintf("%02d-t%d", (i+n-1)%n, (i+n-1)%n)
-		tasks = append(tasks, task(id, pred))
+		tasks = append(tasks, def(id, pred))
 	}
 	cfg, w := planWith(t, tasks...)
 
@@ -228,10 +228,10 @@ func TestVerifyAcceptsALongChain(t *testing.T) {
 	for i := range n {
 		id := fmt.Sprintf("%02d-t%d", i, i)
 		if i == 0 {
-			tasks = append(tasks, task(id))
+			tasks = append(tasks, def(id))
 			continue
 		}
-		tasks = append(tasks, task(id, fmt.Sprintf("%02d-t%d", i-1, i-1)))
+		tasks = append(tasks, def(id, fmt.Sprintf("%02d-t%d", i-1, i-1)))
 	}
 	cfg, w := planWith(t, tasks...)
 
@@ -243,10 +243,10 @@ func TestVerifyAcceptsALongChain(t *testing.T) {
 // A diamond is not a cycle: two tasks may share a predecessor and a successor.
 func TestVerifyAcceptsADiamond(t *testing.T) {
 	cfg, w := planWith(t,
-		task("01-a"),
-		task("02-b", "01-a"),
-		task("03-c", "01-a"),
-		task("04-d", "02-b", "03-c"),
+		def("01-a"),
+		def("02-b", "01-a"),
+		def("03-c", "01-a"),
+		def("04-d", "02-b", "03-c"),
 	)
 	if report := Verify(cfg, w); !report.OK() {
 		t.Fatalf("Verify rejected a diamond: %v", report.Problems)
@@ -254,7 +254,7 @@ func TestVerifyAcceptsADiamond(t *testing.T) {
 }
 
 func TestVerifyReportsAFileThatDoesNotParse(t *testing.T) {
-	cfg, w := planWith(t, task("01-a"))
+	cfg, w := planWith(t, def("01-a"))
 	if err := os.WriteFile(w.TaskFile(Planned, "02-broken"), []byte("{nope"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestVerifyReportsAFileThatDoesNotParse(t *testing.T) {
 // file, so it is reported rather than tolerated.
 func TestVerifyReportsAFilenameThatIsNotItsID(t *testing.T) {
 	cfg, w := planWith(t)
-	blob, err := task("01-a").Encode()
+	blob, err := def("01-a").Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,8 +296,8 @@ func TestVerifyReportsAFilenameThatIsNotItsID(t *testing.T) {
 // One id in two states makes its state ambiguous, which would let the
 // orchestrator transition it twice.
 func TestVerifyReportsATaskInTwoStates(t *testing.T) {
-	cfg, w := planWith(t, task("01-a"))
-	writeTask(t, w, Review, task("01-a"))
+	cfg, w := planWith(t, def("01-a"))
+	writeTask(t, w, Review, def("01-a"))
 
 	report := Verify(cfg, w)
 	if report.OK() {
@@ -343,7 +343,7 @@ func TestVerifyReportsEveryProblemInOneRun(t *testing.T) {
 func TestTasksReadsEveryStateDirectory(t *testing.T) {
 	cfg, w := planWith(t)
 	for i, s := range States() {
-		writeTask(t, w, s, task(fmt.Sprintf("%02d-t%d", i, i)))
+		writeTask(t, w, s, def(fmt.Sprintf("%02d-t%d", i, i)))
 	}
 
 	placed, errs := w.Tasks()
@@ -364,8 +364,8 @@ func TestTasksReadsEveryStateDirectory(t *testing.T) {
 }
 
 func TestFindTaskReportsTheState(t *testing.T) {
-	_, w := planWith(t, task("01-a"))
-	writeTask(t, w, Approved, task("02-b"))
+	_, w := planWith(t, def("01-a"))
+	writeTask(t, w, Approved, def("02-b"))
 
 	got, ok := w.FindTask("02-b")
 	if !ok {
@@ -382,7 +382,7 @@ func TestFindTaskReportsTheState(t *testing.T) {
 // Verification repairs a missing escalation directory rather than only
 // complaining: an agent with nowhere to write would fail at the worst moment.
 func TestVerifyRestoresAMissingEscalationDirectory(t *testing.T) {
-	cfg, w := planWith(t, task("01-a"))
+	cfg, w := planWith(t, def("01-a"))
 	if err := os.RemoveAll(w.TaskEscalations("01-a")); err != nil {
 		t.Fatal(err)
 	}
