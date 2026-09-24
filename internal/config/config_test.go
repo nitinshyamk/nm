@@ -72,6 +72,62 @@ func TestLoadFillsMissingKeysAndKeepsUnknownOnes(t *testing.T) {
 	}
 }
 
+// A config file written before workplans existed must grow the key without
+// disturbing the values already in it. This is the upgrade path every existing
+// ~/.nm.json takes, so it is asserted rather than assumed.
+func TestLoadAddsWorkplansRootToAnOlderConfig(t *testing.T) {
+	path := configAt(t)
+	older := `{
+  "projects_root": "C:/repos",
+  "tasks_root": "C:/repos/tasks",
+  "hash_length": 6
+}`
+	if err := os.WriteFile(path, []byte(older), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.WorkplansRoot != Defaults().WorkplansRoot {
+		t.Errorf("WorkplansRoot = %q, want the default %q", cfg.WorkplansRoot, Defaults().WorkplansRoot)
+	}
+	if cfg.ProjectsRoot != "C:/repos" {
+		t.Errorf("ProjectsRoot = %q, want the value already in the file", cfg.ProjectsRoot)
+	}
+	if cfg.TasksRoot != "C:/repos/tasks" {
+		t.Errorf("TasksRoot = %q, want the value already in the file", cfg.TasksRoot)
+	}
+	if cfg.HashLength != 6 {
+		t.Errorf("HashLength = %d, want 6", cfg.HashLength)
+	}
+
+	// The key is written back, so the next run reads it rather than defaulting
+	// again.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("rewritten config is not valid JSON: %v", err)
+	}
+	for _, key := range []string{"workplans_root", "escalations_dir"} {
+		if _, ok := back[key]; !ok {
+			t.Errorf("Load did not persist %s", key)
+		}
+	}
+}
+
+func TestWorkplansExpandsLikeTheOtherRoots(t *testing.T) {
+	cfg := Defaults()
+	cfg.WorkplansRoot = "/src/workplans"
+	if got := cfg.Workplans(); got != "/src/workplans" {
+		t.Errorf("Workplans() = %q, want /src/workplans", got)
+	}
+}
+
 func TestLoadRejectsBrokenJSON(t *testing.T) {
 	path := configAt(t)
 	if err := os.WriteFile(path, []byte("{nope"), 0o644); err != nil {
