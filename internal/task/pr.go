@@ -59,6 +59,20 @@ type Forge interface {
 	EditBody(dir, branch, bodyFile string) error
 }
 
+// Reviewer is the slice of the GitHub CLI that deciding a task's state needs:
+// whether its pull request has been approved, what feedback arrived after it was
+// published, and whether it can be merged.
+//
+// It is separate from Forge rather than added to it because publishing and
+// reviewing are used by different callers — Publish needs none of this, and the
+// orchestrator needs none of Create. A fake for one should not have to implement
+// the other.
+type Reviewer interface {
+	CheckAuth() error
+	StatusForBranch(dir, branch string) (*forge.Status, error)
+	Merge(dir string, number int, method string) error
+}
+
 // PublishOptions controls a pull request run.
 type PublishOptions struct {
 	Ask   Asker
