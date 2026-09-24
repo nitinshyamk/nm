@@ -289,6 +289,17 @@ stopped and is waiting on you.
 - `d` deletes, after listing uncommitted work in every repo and flagging a
   non-empty `artifacts/`. A running agent is stopped first.
 
+## Workplans
+
+A workplan is the layer above tasks: a directory of task definitions, one file
+per task, worked through in dependency order. A task's state *is* which
+directory its definition sits in — `planned`, `in-progress`, `review`,
+`approved`, or `completed` — so a transition is a file move, and `ls` tells you
+where everything stands without anything having to be asked. Each definition
+names the repositories it touches, the tasks that have to land before it, and
+the acceptance criteria that say when it is done; one that is unblocked becomes
+an ordinary task directory with a background agent working it.
+
 ## Configuration — `~/.nm.json`
 
 Created with defaults on first run. Missing keys are filled in on load, and
