@@ -185,8 +185,14 @@ func TestNushellWrapperClassifiesEveryTopLevelCommand(t *testing.T) {
 	// Commands that reach enterDir, and so must take the wrapper's cd path.
 	canCD := map[string]bool{"task": true, "worktree": true}
 	// Commands that only write to stdout and must stay pipeline-transparent.
+	//
+	// workplan is here rather than in canCD deliberately: a workplan directory
+	// is not somewhere you work — the work happens in the task directories it
+	// starts — so nothing in it calls enterDir. Staying output-only is also what
+	// lets `nm workplan execute --json` be read by a poller.
 	outputOnly := map[string]bool{
 		"completion": true, "config": true, "help": true, "self": true, "shell": true,
+		"workplan": true,
 	}
 
 	routed := nuCDCommands(t)

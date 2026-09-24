@@ -75,7 +75,7 @@ func newRootCmd() *cobra.Command {
 		&cobra.Group{ID: groupCommon, Title: "Common commands:"},
 		&cobra.Group{ID: groupConfig, Title: "Configuration:"},
 	)
-	cmd.AddCommand(newWorktreeCmd(), newTaskCmd(), newShellCmd(), newConfigCmd(), newSelfCmd())
+	cmd.AddCommand(newWorktreeCmd(), newTaskCmd(), newWorkplanCmd(), newShellCmd(), newConfigCmd(), newSelfCmd())
 
 	// cobra generates these two itself; file them under Configuration rather
 	// than leaving them in an unlabelled group of their own.

@@ -10,6 +10,7 @@ import (
 	"github.com/nitinshyamk/nm/internal/repos"
 	"github.com/nitinshyamk/nm/internal/shellint"
 	"github.com/nitinshyamk/nm/internal/task"
+	"github.com/nitinshyamk/nm/internal/workplan"
 	"github.com/spf13/cobra"
 )
 
@@ -49,6 +50,24 @@ func completeTaskNames(_ *cobra.Command, args []string, toComplete string) ([]st
 		out = append(out, fmt.Sprintf("%s\t%s", t.Label(), strings.Join(names, ", ")))
 	}
 	return out, noFiles
+}
+
+// completeWorkplanNames feeds tab-completion with the workplans that exist right
+// now.
+//
+// Unlike a task, a workplan is offered bare, with no description after the tab:
+// the useful thing to say about one is how many tasks sit in each state, and
+// counting those means reading every file in five directories. Completion runs on
+// every tab press, so it stays with the cheap answer.
+func completeWorkplanNames(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, noFiles
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, noFiles
+	}
+	return workplan.Names(cfg, toComplete), noFiles
 }
 
 // completeOneRepo completes a single repository argument.
