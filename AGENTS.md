@@ -4,7 +4,7 @@ Instructions for AI agents working in this repository.
 
 ## What nm is
 
-`nm` is a personal CLI for two workflows:
+`nm` is a personal CLI for three workflows:
 
 - **Worktrees** — throwaway git worktrees under `~/projects/worktrees`, created with
   predictable names, then listed, entered, and deleted through a TUI.
@@ -15,6 +15,42 @@ Instructions for AI agents working in this repository.
   Claude agent.
   `nm task rebase` is the one task that starts from a branch that already
   exists on the remote rather than cutting a new one.
+- **Workplans** — a body of work as a set of tasks under
+  `~/projects/workplans/<name>/`, moving through five states. `nm workplan execute`
+  is the orchestrator: one pass, then it exits.
+
+## Workplans
+
+A task's state **is** which directory its definition sits in — `planned`,
+`in-progress`, `review`, `approved`, `completed` — so a transition is a file move
+and `ls` answers "where is everything". Nothing is cached, which is what makes
+`execute` a reconciler: each pass reads the filesystem and GitHub from scratch, so
+an interrupted pass is repaired by running it again rather than cleaned up after.
+
+Four things here are load-bearing and easy to break by accident:
+
+- **A background agent has no terminal, so it must never stop to ask.** An
+  interactive prompt leaves it waiting on stdin, which means it is no longer reading
+  files, so nothing written to its escalations directory can reach it — only
+  `claude attach` recovers it, and from outside it looks exactly like an agent that
+  is working. Agents launch with `--permission-mode auto` for this reason;
+  `bypassPermissions` has no classifier and `--dangerously-skip-permissions` is
+  never used. Escalation is by file and by nothing else.
+- **The refine latch.** Every other transition is latched by the file move that
+  performs it. A refine round is the exception — the task stays in `review`
+  throughout while the trigger stays true — so `refining.md` records it. Without
+  that, a one-minute poller starts one agent per minute for the length of the round,
+  all in the same worktree. See §5.5.1 of the design document.
+- **Read pull requests with `--state all`, never just open.** A merged pull request
+  is how a task's life normally ends; filtering to open ones made a merged task look
+  like work that was never published and stuck it in `review` forever.
+- **`--merge` gates nm performing a merge, not noticing one.** A pull request merged
+  by hand still completes its task without the flag.
+
+The skills in `internal/skills` drive all of this and are embedded in the binary so
+a test can check every command they name against the real command tree. A skill is
+read by an agent working unattended, so a command that does not exist fails in the
+middle of the work rather than at load time.
 
 ## Committing — the rule
 
@@ -44,6 +80,9 @@ internal/gitx/       every git invocation lives here (os/exec, not go-git)
 internal/repos/      what is a repository under projects_root (completion)
 internal/worktree/   worktree create / discover / delete
 internal/task/       task create / discover / delete, .nm-task.json, rebase
+internal/workplan/   workplans: the task schema, verify, and the orchestrator
+internal/skills/     the agent skills that drive workplans, embedded and installed
+internal/filecopy/   copying documents between directories, never overwriting
 internal/agent/      `claude` background agents: launch, status, attach
 internal/forge/      the `gh` CLI: auth, find, create, and edit pull requests
 internal/shellint/   shell integration scripts and the cd-file protocol
