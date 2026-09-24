@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/nitinshyamk/nm/internal/agent"
 	"github.com/nitinshyamk/nm/internal/config"
@@ -271,3 +272,39 @@ func (a agentRunner) Alive(id, dir string) bool {
 }
 
 var _ workplan.Agents = agentRunner{}
+
+func newWorkplanAwaitCmd() *cobra.Command {
+	var timeout time.Duration
+	cmd := &cobra.Command{
+		Use:     "await-resolution <escalation-file>",
+		GroupID: groupPlanRun,
+		Short:   "Block until an escalation is answered",
+		Long: "Waits for <timestamp>-resolution.md to appear beside the escalation,\n" +
+			"then exits zero and prints its path. Exits non-zero on timeout.\n\n" +
+			"This exists so a blocked agent waits on one process instead of waking on\n" +
+			"a timer. An agent's wakeup reloads its whole conversation context, so an\n" +
+			"unanswered escalation polled every two minutes costs hundreds of reloads\n" +
+			"overnight; a blocked process costs nothing.\n\n" +
+			"Returns immediately when the answer is already there, so an agent that\n" +
+			"restarted after one landed does not wait for nothing.",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := workplan.Await(cmd.Context(), args[0], timeout)
+			if err != nil {
+				if errors.Is(err, workplan.ErrAwaitTimeout) {
+					// A timeout is an outcome the skill handles, not a crash: the
+					// escalation stays open and the answer can still arrive.
+					return fmt.Errorf("%w after %s; the escalation is still open", err, timeout)
+				}
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), path)
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&timeout, "timeout", time.Hour,
+		"how long to wait before giving up (0 waits forever)")
+	_ = cmd.RegisterFlagCompletionFunc("timeout", cobra.NoFileCompletions)
+	return cmd
+}
