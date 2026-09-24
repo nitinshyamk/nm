@@ -109,6 +109,10 @@ func Load() (Config, error) {
 		delete(unknown, k)
 	}
 
+	if err := cfg.deriveMissingRoots(raw); err != nil {
+		return Config{}, err
+	}
+
 	// Rewrite only when the file is missing keys, so nm is self-healing after
 	// an upgrade adds a setting without rewriting a file that is already fine.
 	if complete, err := hasAllKeys(raw); err == nil && !complete {
@@ -117,6 +121,45 @@ func Load() (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// deriveMissingRoots fills in a root that this version of nm added, siting it
+// beside the roots the user already configured rather than at its default.
+//
+// The defaults all sit under ~/projects, but a user who moved projects_root to
+// C:/repos has moved every root with it. Handing such a config the literal
+// default for a new key would put workplans under ~/projects/workplans while
+// tasks and worktrees are under C:/repos — a split nobody asked for and the kind
+// of thing that is noticed only after work has been written to the wrong place.
+//
+// Only a key that is genuinely absent is derived. A key the user set, including
+// one set to the default, is theirs.
+func (c *Config) deriveMissingRoots(raw []byte) error {
+	var present map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &present); err != nil {
+		return fmt.Errorf("parsing the configuration: %w", err)
+	}
+	if _, ok := present["workplans_root"]; ok {
+		return nil
+	}
+	// Tasks is the nearest relative: a workplan is a directory of tasks, so it
+	// belongs wherever tasks live.
+	if base := siblingOf(c.TasksRoot); base != "" {
+		c.WorkplansRoot = base + "/workplans"
+	}
+	return nil
+}
+
+// siblingOf returns the parent of a configured root, in the same spelling the
+// user wrote it, so a derived root keeps their separators and any leading ~.
+// It answers "" when there is no parent to hang a sibling from.
+func siblingOf(root string) string {
+	trimmed := strings.TrimRight(strings.ReplaceAll(root, `\`, "/"), "/")
+	idx := strings.LastIndex(trimmed, "/")
+	if idx <= 0 {
+		return ""
+	}
+	return trimmed[:idx]
 }
 
 func known() map[string]struct{} {
