@@ -206,3 +206,64 @@ func TestDescribePrefersState(t *testing.T) {
 		}
 	}
 }
+
+// A background agent has no terminal, so it must not be startable in a mode that
+// can stop it with a dialog.
+//
+// This is not a preference. An agent blocked on a permission prompt is waiting on
+// stdin nobody is attached to: it is no longer reading files, so nothing nm writes
+// to its escalations directory reaches it, and only a human running
+// `claude attach` can clear it. It looks identical to an agent that is working,
+// which is how a workplan silently stops.
+func TestLaunchArgsRunUnattendedAgentsWithoutPrompts(t *testing.T) {
+	args := LaunchArgs(LaunchOptions{Name: "nm-auth", Prompt: "do the thing"})
+
+	mode := ""
+	for i, a := range args {
+		if a == "--permission-mode" && i+1 < len(args) {
+			mode = args[i+1]
+		}
+	}
+	if mode == "" {
+		t.Fatalf("a background agent was started with no permission mode, so a tool "+
+			"confirmation will block it forever: %q", args)
+	}
+	if mode != UnattendedMode {
+		t.Errorf("permission mode is %q, want %q", mode, UnattendedMode)
+	}
+
+	// bypassPermissions has no classifier, and --dangerously-skip-permissions is
+	// never acceptable. auto refuses genuinely destructive commands while letting
+	// ordinary development through, which is the only combination that makes an
+	// unattended agent both unblockable and safe.
+	for _, banned := range []string{"bypassPermissions", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"} {
+		for _, a := range args {
+			if a == banned {
+				t.Errorf("launch args contain %q", banned)
+			}
+		}
+	}
+	// The mode must come before the separator, or it is passed to the agent as
+	// part of its prompt rather than to claude.
+	for i, a := range args {
+		if a == "--" && i < len(args)-1 {
+			for _, later := range args[i+1:] {
+				if later == "--permission-mode" {
+					t.Error("--permission-mode appears after the -- separator")
+				}
+			}
+		}
+	}
+}
+
+// An agent a human is watching keeps the normal prompts: there is someone there to
+// answer them, and silently widening permissions for an attended session would be
+// a surprise.
+func TestLaunchArgsLeaveAttendedAgentsAlone(t *testing.T) {
+	args := LaunchArgs(LaunchOptions{Prompt: "do the thing", Attended: true})
+	for _, a := range args {
+		if a == "--permission-mode" {
+			t.Errorf("an attended agent had its permission mode changed: %q", args)
+		}
+	}
+}

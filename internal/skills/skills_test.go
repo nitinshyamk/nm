@@ -293,3 +293,43 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
+
+// The two unattended skills must tell the agent never to stop and ask.
+//
+// This is the rule that cost a whole dogfood run: an agent that asks
+// interactively is waiting on stdin nobody is attached to, so it is not reading
+// files either and the resolution mechanism cannot reach it. Only `claude attach`
+// recovers it, and from the outside the task looks like one being worked on. The
+// rule is easy to soften back into "escalate and also surface it", so it is
+// pinned here.
+func TestUnattendedSkillsForbidInteractiveQuestions(t *testing.T) {
+	all, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unattended := map[string]bool{"nm-task-execute": true, "nm-task-refine": true}
+
+	for _, s := range all {
+		if !unattended[s.Name] {
+			continue
+		}
+		body := strings.ToLower(s.Body)
+		if !strings.Contains(body, "never stop to ask") &&
+			!strings.Contains(body, "must never stop to ask") {
+			t.Errorf("%s does not tell the agent never to stop and ask", s.Name)
+		}
+		if !strings.Contains(body, "no terminal") {
+			t.Errorf("%s does not say why: there is no terminal attached", s.Name)
+		}
+		// The earlier wording told the agent to write a file *and* surface it the
+		// normal way, which is what made the deadlock reachable.
+		for _, banned := range []string{
+			"surface it the normal way as well",
+			"and surfaced as normal",
+		} {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s still says %q, which reintroduces the interactive path", s.Name, banned)
+			}
+		}
+	}
+}

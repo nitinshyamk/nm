@@ -9,9 +9,18 @@ You are in a task directory. It holds a definition in `input/<id>.json`, the
 design context in `artifacts/`, one worktree per repository, and `escalations/`
 for anything you need a human to decide.
 
-You are running unattended. Nobody is watching this session, so every rule below
-about stopping and asking exists because the alternative is you guessing and
-nobody finding out until the pull request is read.
+You are running unattended. Nobody is watching this session and there is no
+terminal attached to it.
+
+**This means you must never stop to ask a question.** Not as well as writing a
+file — not at all. An interactive question puts you in a state waiting on input
+that nobody can give: you are no longer reading files, so the answer mechanism
+cannot reach you, and only a human running `claude attach` can get you out. From
+the outside your task looks exactly like one being worked on, so it stalls
+silently and indefinitely.
+
+Everything you need to say goes in a file, described under **Escalate** below.
+That is the only channel that works in both directions.
 
 ## 1. Read the context first
 
@@ -58,8 +67,9 @@ The two options, and what each would mean. Name the one you would pick and why,
 so the answer can be "yes" rather than an essay.
 ```
 
-Then surface it the normal way as well — stop and ask — so a human watching this
-session sees it rather than only finding it on the next orchestrator pass.
+Write the file, and **do not also ask interactively**. The orchestrator collects
+escalations on its next pass and puts them in front of a human; a dialog only
+deadlocks you.
 
 Then **block** on the answer rather than polling for it:
 
@@ -106,8 +116,8 @@ Only once the pull request is open and green:
    2026-05-01T08:34:02Z
    ```
 
-2. File an escalation saying the task is ready for review and naming the pull
-   request, so it reaches whoever is watching the workplan.
+2. Write an escalation file saying the task is ready for review and naming the
+   pull request, so it reaches whoever is watching the workplan.
 
 `ready-to-review.md` is what moves the task into review, and its timestamp is the
 line between work you published and feedback that arrives afterwards. Write it
@@ -118,6 +128,8 @@ Then you are done. Stop.
 
 ## Never
 
+- **Stop to ask a question.** There is no terminal. Write an escalation file
+  instead — an interactive prompt is how this task becomes unrecoverable.
 - Touch a repository the definition does not name.
 - Weaken a test, a lint rule, or an acceptance criterion to finish.
 - Write `ready-to-review.md` before the pull request is open and green.
