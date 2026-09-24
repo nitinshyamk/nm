@@ -42,11 +42,21 @@ description = "Fail if any Go source is unformatted"
 run = "golangci-lint fmt --diff"
 
 [tasks.install]
-description = "Build nm and install it into install_dir from ~/.nm.json"
-depends = ["build"]
+description = "Build nm and install it into install_dir from ~/.nm.json, with the skills"
+# install:skills is a dependency rather than a second line here, because a task's
+# run is one process invocation and never a shell script.
+depends = ["build", "install:skills"]
 # `nm self install` reads install_dir from ~/.nm.json and copies the binary
 # built above. Go does the work that mkdir -p and install -m used to.
 run = "go run . self install"
+
+[tasks."install:skills"]
+description = "Write the bundled workplan skills into ~/.claude/skills"
+# Separate from install rather than a second line under it: a mise task's run is
+# one process invocation, never a shell script. --force replaces a skill that
+# differs, which is what a development build wants; without it an edited skill
+# would block the whole set.
+run = "go run . self install-skills --force"
 
 [tasks.setup-shell]
 description = "Append the nm shell integration to your shell rc file (idempotent)"

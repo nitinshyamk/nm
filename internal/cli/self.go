@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/nitinshyamk/nm/internal/config"
+	"github.com/nitinshyamk/nm/internal/skills"
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +21,7 @@ func newSelfCmd() *cobra.Command {
 		Short:             "Manage this nm installation",
 		ValidArgsFunction: cobra.NoFileCompletions,
 	}
-	cmd.AddCommand(newSelfInstallCmd())
+	cmd.AddCommand(newSelfInstallCmd(), newSelfInstallSkillsCmd())
 	return cmd
 }
 
@@ -216,4 +218,68 @@ func copyFile(src, dest string) error {
 		return fmt.Errorf("writing %s: %w", dest, err)
 	}
 	return nil
+}
+
+func newSelfInstallSkillsCmd() *cobra.Command {
+	var (
+		dir    string
+		force  bool
+		dryRun bool
+	)
+	cmd := &cobra.Command{
+		Use:   "install-skills",
+		Short: "Write the bundled workplan skills into ~/.claude/skills",
+		Long: "Installs the skills that drive nm workplan: nm-work-plan,\n" +
+			"nm-task-execute, nm-task-refine, and nm-workplan-execute.\n\n" +
+			"They are embedded in this binary, so they always match the commands it\n" +
+			"has. A file that is already identical is left alone; one that differs is\n" +
+			"a conflict that --force replaces. A symlinked destination is refused\n" +
+			"either way, because following one writes somewhere nobody named.\n\n" +
+			"`mise run install` runs this, so a development build refreshes them.",
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if dir == "" {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("locating home directory: %w", err)
+				}
+				dir = skills.DefaultDir(home)
+			}
+
+			results, err := skills.Install(skills.InstallOptions{
+				Dir: dir, Force: force, DryRun: dryRun,
+			})
+			if err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			if dryRun {
+				fmt.Fprintf(out, "would install into %s:\n", dir)
+			}
+			blocked := false
+			for _, r := range results {
+				fmt.Fprintf(out, "  %-22s %s\n", r.Name, r.Action)
+				if r.Reason != "" {
+					fmt.Fprintf(out, "  %-22s %s\n", "", r.Reason)
+					blocked = true
+				}
+			}
+			if blocked {
+				return errors.New("nothing was written; resolve the conflicts above or re-run with --force")
+			}
+			if !dryRun {
+				fmt.Fprintf(out, "\ninstalled into %s\n", dir)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&dir, "dir", "", "skills directory (default: ~/.claude/skills)")
+	cmd.Flags().BoolVar(&force, "force", false, "replace a skill that differs from the bundled one")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what would happen and write nothing")
+	_ = cmd.RegisterFlagCompletionFunc("dir", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveFilterDirs
+	})
+	return cmd
 }

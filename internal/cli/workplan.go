@@ -46,6 +46,7 @@ func newWorkplanCmd() *cobra.Command {
 		newWorkplanListCmd(),
 		newWorkplanExecuteCmd(),
 		newWorkplanResolveCmd(),
+		newWorkplanAwaitCmd(),
 	)
 	return cmd
 }
