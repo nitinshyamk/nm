@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nitinshyamk/nm/internal/config"
+	"github.com/nitinshyamk/nm/internal/filecopy"
 	"github.com/nitinshyamk/nm/internal/gitx"
 	"github.com/nitinshyamk/nm/internal/nmhash"
 	"github.com/nitinshyamk/nm/internal/worktree"
@@ -58,6 +59,20 @@ type Task struct {
 	Prompt    string    `json:"prompt,omitempty"`
 	Agent     *Agent    `json:"agent,omitempty"`
 
+	// Workplan and TaskID link a task back to the workplan that started it.
+	// Both are recorded because the link is needed in both directions and a hash
+	// cannot be reversed: the orchestrator knows an id and has to find the
+	// directory.
+	Workplan string `json:"workplan,omitempty"`
+	TaskID   string `json:"task_id,omitempty"`
+
+	// TaskFile is the definition copied into the input directory, by name.
+	TaskFile string `json:"task_file,omitempty"`
+
+	// HasEscalations records that this task has an escalations directory, so
+	// makeDirs keeps making it on later saves.
+	HasEscalations bool `json:"has_escalations,omitempty"`
+
 	Dir string `json:"-"` // absolute path, implied by the file's location
 }
 
@@ -82,11 +97,24 @@ func (t Task) Scratch(cfg config.Config) string {
 	return filepath.Join(t.Dir, cfg.ScratchDir)
 }
 
+// Escalations returns the directory where an agent working unattended writes
+// what it needs a human to decide, and reads the answer back.
+//
+// Only a task given a definition has one: an interactive task escalates by
+// stopping and asking, which needs no directory.
+func (t Task) Escalations(cfg config.Config) string {
+	return filepath.Join(t.Dir, cfg.EscalationsDir)
+}
+
 // makeDirs creates the fixed directories every task directory has. It runs on
 // creation and again whenever a prompt is saved, so a task made before one of
 // these directories existed grows it rather than staying half-shaped.
 func (t Task) makeDirs(cfg config.Config) error {
-	for _, dir := range []string{t.Artifacts(cfg), t.Input(cfg), t.Scratch(cfg)} {
+	dirs := []string{t.Artifacts(cfg), t.Input(cfg), t.Scratch(cfg)}
+	if t.HasEscalations {
+		dirs = append(dirs, t.Escalations(cfg))
+	}
+	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("creating %s: %w", dir, err)
 		}
@@ -125,6 +153,31 @@ type Options struct {
 	Repos   []string
 	Offline bool
 	Now     func() time.Time
+
+	// Artifacts is a file or directory copied into the task's artifacts
+	// directory, so an agent starts with the context the work was scoped
+	// against rather than having to be told it.
+	Artifacts string
+
+	// TaskFile is a definition copied into the task's input directory. Giving
+	// one also creates the escalations directory, because a task with a
+	// definition is one an agent works unattended and so needs somewhere to say
+	// it is stuck.
+	TaskFile string
+
+	// Workplan and TaskID record where a task came from, when it came from a
+	// workplan. Both are needed: the orchestrator finds a task directory from an
+	// id, and a hash cannot be reversed into one.
+	Workplan string
+	TaskID   string
+
+	// Base overrides the branch point. Empty means the usual behavior — branch
+	// from the remote's current default branch.
+	//
+	// It exists for stacked work: a task whose predecessor is approved but not
+	// yet merged has to branch from that predecessor's branch, or it starts from
+	// a base that does not contain the work it was scoped to build on.
+	Base *gitx.Base
 }
 
 // Create builds a task directory with a worktree per repository.
@@ -140,7 +193,12 @@ func Create(cfg config.Config, opts Options) (t Task, err error) {
 	if err := worktree.ValidateName(opts.Name); err != nil {
 		return Task{}, fmt.Errorf("task %w", err)
 	}
-	if len(opts.Repos) == 0 {
+	// A task with no repositories is allowed, but only deliberately. Reaching
+	// here with an empty list and no task definition is the signature of a
+	// command line that lost its arguments, where a workplan task that entails no
+	// code change — a clarification, a decision to record — is a real thing the
+	// schema describes.
+	if len(opts.Repos) == 0 && opts.TaskFile == "" {
 		return Task{}, fmt.Errorf("a task needs at least one repository")
 	}
 	if dup := firstDuplicate(opts.Repos); dup != "" {
@@ -168,12 +226,22 @@ func Create(cfg config.Config, opts Options) (t Task, err error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return Task{}, fmt.Errorf("creating %s: %w", dir, err)
 	}
+
+	// built tracks the worktrees to unwind, separately from t.
+	//
+	// The defer cannot read t.Repos: every failure below returns `Task{}, err`,
+	// which assigns the zero value to the named return before the defer runs, so
+	// by the time the unwind looks there is nothing in it. That left the first
+	// repository's branch and a prunable worktree behind whenever a later
+	// repository failed — and the leftover branch then made retrying the same
+	// task name fail with "branch already exists".
+	var built []Repo
 	// Unwind everything on any failure, so a half-built task never survives.
 	defer func() {
 		if err == nil {
 			return
 		}
-		for _, r := range t.Repos {
+		for _, r := range built {
 			_, _ = worktree.Remove(r.Source, r.Dir, r.Branch, true)
 		}
 		_ = os.RemoveAll(dir)
@@ -184,7 +252,11 @@ func Create(cfg config.Config, opts Options) (t Task, err error) {
 		if gitx.BranchExists(source, branch) {
 			return Task{}, fmt.Errorf("branch %s already exists in %s", branch, source)
 		}
-		base, baseErr := gitx.ResolveBase(source, cfg.DefaultBaseBranch, opts.Offline)
+		// An explicit base is stacked work: the caller has already resolved which
+		// commit this task builds on, and asking the remote for its default
+		// branch would discard exactly that decision — which is the point, since
+		// the predecessor's branch is usually not merged yet.
+		base, baseErr := resolveBase(source, cfg, opts)
 		if baseErr != nil {
 			return Task{}, baseErr
 		}
@@ -192,7 +264,7 @@ func Create(cfg config.Config, opts Options) (t Task, err error) {
 		if addErr := gitx.AddWorktree(source, worktreeDir, branch, base.Commit); addErr != nil {
 			return Task{}, addErr
 		}
-		t.Repos = append(t.Repos, Repo{
+		built = append(built, Repo{
 			Name:       repo,
 			Dir:        worktreeDir,
 			Branch:     branch,
@@ -201,14 +273,46 @@ func Create(cfg config.Config, opts Options) (t Task, err error) {
 			Source:     source,
 		})
 	}
+	t.Repos = built
 
+	t.Workplan, t.TaskID = opts.Workplan, opts.TaskID
+	if opts.TaskFile != "" {
+		t.HasEscalations = true
+	}
 	if err := t.makeDirs(cfg); err != nil {
 		return Task{}, err
 	}
+
+	// The copies come after the worktrees and before Save, so a failure to copy
+	// unwinds through the same defer as a failure to add a worktree. An agent
+	// started against half its context is worse than a task that was never
+	// created.
+	if opts.Artifacts != "" {
+		if err := filecopy.Into(opts.Artifacts, t.Artifacts(cfg)); err != nil {
+			return Task{}, fmt.Errorf("copying artifacts: %w", err)
+		}
+	}
+	if opts.TaskFile != "" {
+		dst := filepath.Join(t.Input(cfg), filepath.Base(opts.TaskFile))
+		if err := filecopy.File(opts.TaskFile, dst); err != nil {
+			return Task{}, fmt.Errorf("copying the task definition: %w", err)
+		}
+		t.TaskFile = filepath.Base(opts.TaskFile)
+	}
+
 	if err := t.Save(); err != nil {
 		return Task{}, err
 	}
 	return t, nil
+}
+
+// resolveBase answers where a task's branch is cut from: the caller's explicit
+// base when there is one, otherwise the remote's current default branch.
+func resolveBase(source string, cfg config.Config, opts Options) (gitx.Base, error) {
+	if opts.Base != nil {
+		return *opts.Base, nil
+	}
+	return gitx.ResolveBase(source, cfg.DefaultBaseBranch, opts.Offline)
 }
 
 func firstDuplicate(values []string) string {
