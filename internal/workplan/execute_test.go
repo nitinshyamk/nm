@@ -1046,3 +1046,93 @@ func TestAWorkingAgentIsNotReported(t *testing.T) {
 		t.Errorf("a working agent produced problems: %v", result.Problems)
 	}
 }
+
+// mergedStatus is a pull request that is already in its base branch, with nobody
+// having formally approved it.
+func (h *harness) markMerged(t *testing.T, id string, number int) {
+	t.Helper()
+	for _, repo := range h.taskFor(t, id).Repos {
+		h.review.byBranch[repo.Branch] = &forge.Status{
+			Number: number, URL: fmt.Sprintf("https://example.invalid/pull/%d", number),
+			State: forge.StateMerged, Decision: "",
+		}
+	}
+}
+
+// A task whose pull request was merged without a review must still complete.
+//
+// This is the bug the first real dogfood run found. A merge is how a task's life
+// normally ends, and merging without a separate approval is the ordinary way a
+// solo maintainer works — so the path that broke was the common one. The task sat
+// in review forever reporting "0 of 1 open", because the status read filtered to
+// open pull requests and a merged one came back as nothing at all.
+func TestAMergedPullRequestCompletesTheTaskWithoutAnApproval(t *testing.T) {
+	h := newHarness(t, "nm")
+	h.add(t, def2("01-a", "nm"))
+	h.run(t, false)
+	h.markReady(t, "01-a", h.now)
+	h.run(t, false) // -> review
+
+	h.markMerged(t, "01-a", 8)
+
+	// No --merge: nm is observing a merge, not performing one, and requiring the
+	// flag to notice would leave the task stuck.
+	result := h.run(t, false)
+
+	if got := h.stateOf(t, "01-a"); got != Completed {
+		t.Fatalf("state = %s, want completed for a merged pull request", got)
+	}
+	if len(h.review.merged) != 0 {
+		t.Errorf("nm merged %v when the pull request was already merged", h.review.merged)
+	}
+	// The output must not claim an approval nobody gave.
+	notes := strings.Join(transitionNotes(result), " | ")
+	if !strings.Contains(notes, "merged") {
+		t.Errorf("notes = %q, want them to say the work was merged", notes)
+	}
+	if strings.Contains(notes, "approved:") {
+		t.Errorf("notes = %q claim an approval that never happened", notes)
+	}
+}
+
+// A merged pull request must not be read as feedback and start a refine round.
+func TestAMergedPullRequestDoesNotStartARefineRound(t *testing.T) {
+	h := newHarness(t, "nm")
+	h.add(t, def2("01-a", "nm"))
+	h.run(t, false)
+	h.markReady(t, "01-a", h.now)
+	h.run(t, false)
+
+	h.markMerged(t, "01-a", 8)
+	h.now = h.now.Add(time.Minute)
+	h.run(t, false)
+
+	if got := h.agents.count("/nm-task-refine"); got != 0 {
+		t.Errorf("a merged pull request started %d refine agents", got)
+	}
+}
+
+// Merging one of two repositories is not merging the task.
+func TestAPartiallyMergedTaskDoesNotComplete(t *testing.T) {
+	h := newHarness(t, "nm", "site")
+	h.add(t, Task{
+		ID: "01-a", Repositories: []string{"nm", "site"},
+		Description: "Both.", AcceptanceCriteria: []string{"Done."},
+	})
+	h.run(t, false)
+	h.markReady(t, "01-a", h.now)
+	h.run(t, false)
+
+	found := h.taskFor(t, "01-a")
+	h.review.byBranch[found.Repos[0].Branch] = &forge.Status{
+		Number: 1, State: forge.StateMerged,
+	}
+	h.review.byBranch[found.Repos[1].Branch] = &forge.Status{
+		Number: 2, State: forge.StateOpen, Decision: "REVIEW_REQUIRED",
+	}
+
+	h.run(t, false)
+	if got := h.stateOf(t, "01-a"); got == Completed {
+		t.Error("a task with one of two repositories merged was completed")
+	}
+}

@@ -348,7 +348,12 @@ func (p *pass) zeroRepoReview(result *Result, t task.Task, id string) {
 	p.move(result, id, Review, Approved, "no repositories; escalations answered")
 }
 
-// readPRs reads the open pull request for each of a task's repositories.
+// readPRs reads the latest pull request for each of a task's repositories,
+// whatever state it is in.
+//
+// Merged ones included, deliberately. A merged pull request is how a task's life
+// normally ends, and reading only open ones made a merged task look like work that
+// was never published at all.
 func (p *pass) readPRs(t task.Task) ([]*forge.Status, []string) {
 	var statuses []*forge.Status
 	var problems []string
@@ -382,12 +387,46 @@ func allApproved(statuses []*forge.Status) bool {
 	return true
 }
 
+// approvalNote says why the task advanced, distinguishing a human's approval from
+// a merge that happened without one — which is a stronger signal, not a weaker
+// one, and is worth naming so the output does not claim an approval nobody gave.
 func approvalNote(statuses []*forge.Status) string {
+	numbers := make([]string, 0, len(statuses))
+	merged := 0
+	for _, s := range statuses {
+		numbers = append(numbers, fmt.Sprintf("#%d", s.Number))
+		if s.Merged() {
+			merged++
+		}
+	}
+	verb := "approved"
+	if merged == len(statuses) {
+		verb = "already merged"
+	} else if merged > 0 {
+		verb = "approved or merged"
+	}
+	return verb + ": " + strings.Join(numbers, ", ")
+}
+
+// allMerged reports whether every pull request is already in its base branch.
+func allMerged(statuses []*forge.Status) bool {
+	if len(statuses) == 0 {
+		return false
+	}
+	for _, s := range statuses {
+		if !s.Merged() {
+			return false
+		}
+	}
+	return true
+}
+
+func numbersOf(statuses []*forge.Status) string {
 	numbers := make([]string, 0, len(statuses))
 	for _, s := range statuses {
 		numbers = append(numbers, fmt.Sprintf("#%d", s.Number))
 	}
-	return "approved: " + strings.Join(numbers, ", ")
+	return strings.Join(numbers, ", ")
 }
 
 // latestFeedback is the most recent review or comment after the given time,
@@ -489,6 +528,14 @@ func (p *pass) approvedToCompleted(result *Result) {
 
 		statuses, problems := p.readPRs(t)
 		result.Problems = append(result.Problems, problems...)
+
+		// Already in production, however it got there. --merge gates nm *doing* a
+		// merge; it cannot gate observing one somebody else did, and requiring the
+		// flag to notice would leave a merged task stuck in approved forever.
+		if len(statuses) == len(t.Repos) && allMerged(statuses) {
+			p.move(result, id, Approved, Completed, "merged outside nm: "+numbersOf(statuses))
+			continue
+		}
 
 		if !p.opts.Merge {
 			for _, s := range statuses {

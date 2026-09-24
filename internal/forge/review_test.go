@@ -267,3 +267,69 @@ func TestClientSatisfiesItsInterfaces(t *testing.T) {
 		t.Error("Client does not satisfy the reviewing interface the orchestrator takes")
 	}
 }
+
+// A merged pull request has to be readable, because merging is how a task's life
+// normally ends.
+//
+// StatusForBranch used to go through Find, which filters to --state open, so a
+// merged pull request came back as nil and the task it belonged to looked like work
+// that was never published. It sat in review reporting "0 of 1 open" forever — the
+// normal path was the broken one.
+func TestParseStatusListReadsAMergedPullRequest(t *testing.T) {
+	// `gh pr list --json ...` answers with an array, unlike `gh pr view`.
+	out := `[{"number":8,"url":"https://github.com/o/r/pull/8","state":"MERGED","isDraft":false,
+		"reviewDecision":"","mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN",
+		"reviews":[],"comments":[]}]`
+
+	s, err := ParseStatusList(out)
+	if err != nil {
+		t.Fatalf("ParseStatusList: %v", err)
+	}
+	if s == nil {
+		t.Fatal("a merged pull request read as nil")
+	}
+	if !s.Merged() {
+		t.Errorf("Merged() = false for state %q", s.State)
+	}
+	if s.Number != 8 {
+		t.Errorf("Number = %d, want 8", s.Number)
+	}
+	// Merged without a review is the case that matters here: the merge is the
+	// stronger signal, and reviewDecision stays empty.
+	if s.Approved() {
+		t.Error("a merged pull request with no review reported itself as approved")
+	}
+}
+
+func TestParseStatusListOnEmptyAndGarbage(t *testing.T) {
+	for _, in := range []string{"", "  ", "[]"} {
+		s, err := ParseStatusList(in)
+		if err != nil {
+			t.Errorf("ParseStatusList(%q): %v", in, err)
+		}
+		if s != nil {
+			t.Errorf("ParseStatusList(%q) invented %+v", in, s)
+		}
+	}
+	if _, err := ParseStatusList("not json"); err == nil {
+		t.Error("ParseStatusList accepted output that is not JSON")
+	}
+}
+
+// Both parsers must agree, since one reads `gh pr view` and the other
+// `gh pr list` over the same fields.
+func TestBothParsersAgree(t *testing.T) {
+	fromView, err := ParseStatus(realOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromList, err := ParseStatusList("[" + realOutput + "]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromView.Number != fromList.Number || fromView.Decision != fromList.Decision ||
+		len(fromView.Reviews) != len(fromList.Reviews) ||
+		len(fromView.Comments) != len(fromList.Comments) {
+		t.Errorf("the two parsers disagree:\n view = %+v\n list = %+v", fromView, fromList)
+	}
+}

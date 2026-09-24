@@ -125,14 +125,38 @@ func (c Client) Status(dir string, number int) (*Status, error) {
 	return ParseStatus(out)
 }
 
-// StatusForBranch reads the pull request open for a branch, or nil when there is
-// none.
+// StatusForBranch reads the most recent pull request for a branch, whatever state
+// it is in, or nil when the branch has never had one.
+//
+// It deliberately does not use Find, which filters to open pull requests. A merged
+// pull request is the normal end of a task's life, and a caller deciding what state
+// that task is in needs to see it — where Find would answer "there is no pull
+// request" and leave the task looking like work that was never published. That was
+// a real bug: a merged task sat in review reporting "0 of 1 open" forever.
 func (c Client) StatusForBranch(dir, branch string) (*Status, error) {
-	pr, err := c.Find(dir, branch)
-	if err != nil || pr == nil {
+	out, err := c.run(dir, "pr", "list", "--head", branch, "--state", "all",
+		"--json", strings.Join(statusFields, ","), "--limit", "1")
+	if err != nil {
 		return nil, err
 	}
-	return c.Status(dir, pr.Number)
+	return ParseStatusList(out)
+}
+
+// ParseStatusList decodes `gh pr list --json <status fields>` output, which is an
+// array, and returns the first entry.
+func ParseStatusList(out string) (*Status, error) {
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" || trimmed == "[]" {
+		return nil, nil
+	}
+	var raw []ghStatus
+	if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
+		return nil, fmt.Errorf("reading the pull request list: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	return statusFrom(raw[0]), nil
 }
 
 // ghStatus mirrors `gh pr view --json`, whose author fields are nested objects
@@ -170,7 +194,12 @@ func ParseStatus(out string) (*Status, error) {
 	if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
 		return nil, fmt.Errorf("reading the pull request: %w", err)
 	}
+	return statusFrom(raw), nil
+}
 
+// statusFrom flattens gh's nested author objects into the plain logins the rest of
+// nm works with.
+func statusFrom(raw ghStatus) *Status {
 	s := &Status{
 		Number:    raw.Number,
 		URL:       raw.URL,
@@ -194,7 +223,7 @@ func ParseStatus(out string) (*Status, error) {
 			URL:       c.URL,
 		})
 	}
-	return s, nil
+	return s
 }
 
 // ErrNotMergeable means GitHub will not merge the pull request as it stands.
