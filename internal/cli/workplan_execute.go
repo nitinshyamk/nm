@@ -271,6 +271,42 @@ func (a agentRunner) Alive(id, dir string) bool {
 	return false
 }
 
+// Stalled reports that an agent exists but is going nowhere: blocked waiting for
+// input, or stopped.
+//
+// Unlike Alive, the cautious answer here is false. This drives a message telling
+// the user to go and look, and crying wolf every minute on a claude that cannot be
+// queried would train them to ignore it.
+func (a agentRunner) Stalled(id, dir string) bool {
+	client := agent.Client{Bin: a.cfg.ClaudeCommand}
+	if !client.Available() {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), agent.ListTimeout)
+	defer cancel()
+
+	sessions, err := client.List(ctx)
+	if err != nil {
+		return false
+	}
+	for _, s := range sessions {
+		matches := (id != "" && (s.ID == id || s.SessionID == id)) || sameOrUnder(s.CWD, dir)
+		if !matches {
+			continue
+		}
+		// Needing input is the blocked case a background agent cannot recover
+		// from; done is an agent that exited without writing a ready marker.
+		// Either way the task is not progressing and nobody has been told.
+		switch s.Class() {
+		case agent.ClassNeedsInput, agent.ClassDone:
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 var _ workplan.Agents = agentRunner{}
 
 func newWorkplanAwaitCmd() *cobra.Command {

@@ -160,12 +160,32 @@ func ParseSessions(data []byte) ([]Session, error) {
 	return sessions, nil
 }
 
+// UnattendedMode is the permission mode a background agent is started in.
+//
+// A background agent has no terminal. Without this it stops on the first tool
+// call the harness wants confirmed — `cd x && git status` is enough — and waits
+// on stdin nobody is attached to. That state is unrecoverable by anything nm
+// can do: the agent is no longer reading files, so no amount of writing to its
+// escalations directory reaches it, and only a human running `claude attach` can
+// clear it. An unattended agent that can be stopped by a dialog is an unattended
+// agent that silently deadlocks.
+//
+// "auto" and not "bypassPermissions": auto still runs its classifier, which
+// refuses genuinely destructive commands (verified against `rm -rf /`), where
+// bypass has no check at all. `--dangerously-skip-permissions` is never used.
+const UnattendedMode = "auto"
+
 // LaunchOptions describes a background agent to start.
 type LaunchOptions struct {
 	Dir     string   // working directory for the agent
 	Name    string   // display name, shown by `claude agents`
 	Prompt  string   // the task prompt
 	AddDirs []string // extra directories the agent may touch
+
+	// Attended leaves the permission mode alone, for an agent a human is
+	// watching. The default is unattended, because that is what every caller in
+	// nm actually starts.
+	Attended bool
 }
 
 // LaunchArgs builds the claude arguments for a background agent.
@@ -173,6 +193,9 @@ func LaunchArgs(opts LaunchOptions) []string {
 	args := []string{"--bg"}
 	if opts.Name != "" {
 		args = append(args, "-n", opts.Name)
+	}
+	if !opts.Attended {
+		args = append(args, "--permission-mode", UnattendedMode)
 	}
 	for _, dir := range opts.AddDirs {
 		args = append(args, "--add-dir", dir)

@@ -13,6 +13,12 @@ You are running unattended, and the orchestrator started you because a reviewer
 said something. Treat their comment as the authority on what they want, not as a
 suggestion to weigh against your own reading of the code.
 
+**Never stop to ask a question.** There is no terminal attached to this session, so
+an interactive prompt leaves you waiting on input nobody can give — and while you
+wait you are not reading files, so the answer mechanism cannot reach you either.
+Only a human running `claude attach` can recover it. Everything you need to say
+goes in an escalation file.
+
 ## 1. Read the feedback
 
 Find the pull request number, then:
@@ -60,7 +66,8 @@ The two readings, and what each would mean for the code. Name the one you would
 pick and why.
 ```
 
-Surface it the normal way as well, then block on the answer:
+Then block on the answer — the file is the whole escalation, so do not also ask
+interactively:
 
 ```sh
 nm workplan await-resolution escalations/<timestamp>.md --timeout 60m

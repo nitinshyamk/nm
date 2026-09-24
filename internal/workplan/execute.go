@@ -57,6 +57,11 @@ func (r Result) Quiet() bool {
 type Agents interface {
 	Launch(dir, name, prompt string, addDirs []string) (id string, err error)
 	Alive(id, dir string) bool
+	// Stalled reports that an agent exists but is neither working nor finished:
+	// blocked on something, or stopped without saying anything. It is separate
+	// from Alive because the two answer different questions — Alive guards the
+	// refine latch, while this is what makes a stuck agent visible at all.
+	Stalled(id, dir string) bool
 }
 
 // ExecuteOptions controls one pass.
@@ -204,6 +209,13 @@ func (p *pass) collectEscalations(result *Result) {
 
 // reviewReady is step 2: in-progress -> review, when the agent has said the work
 // is published and green.
+//
+// It also reports the one state that is otherwise invisible: an agent that is
+// stuck with nothing open. A task in progress whose agent is blocked, with no
+// escalation and no ready marker, looks exactly like a task being worked on — and
+// nm cannot fix it, because a blocked agent is waiting on stdin rather than
+// reading files, so the resolution mechanism cannot reach it. Saying so is the
+// whole remedy available.
 func (p *pass) reviewReady(result *Result) {
 	for _, placed := range p.tasks {
 		if p.state[placed.Task.ID] != InProgress {
@@ -214,11 +226,44 @@ func (p *pass) reviewReady(result *Result) {
 		if !ok {
 			continue
 		}
-		if _, err := os.Stat(t.Ready(p.opts.Config)); err != nil {
+		if _, err := os.Stat(t.Ready(p.opts.Config)); err == nil {
+			p.move(result, id, InProgress, Review, "ready to review")
 			continue
 		}
-		p.move(result, id, InProgress, Review, "ready to review")
+		p.reportIfStuck(result, t, id)
 	}
+}
+
+// reportIfStuck names a task whose agent has stopped without producing anything.
+func (p *pass) reportIfStuck(result *Result, t task.Task, id string) {
+	agentID := ""
+	if t.Agent != nil {
+		agentID = t.Agent.ID
+	}
+	if !p.opts.Agents.Stalled(agentID, t.Dir) {
+		return
+	}
+	// An open escalation is the agent asking for something, which is a different
+	// and already-reported state.
+	open, err := p.w.OpenEscalations(id)
+	if err != nil {
+		result.Problems = append(result.Problems, fmt.Sprintf("%s: %v", id, err))
+		return
+	}
+	if len(open) > 0 {
+		return
+	}
+	result.Problems = append(result.Problems, fmt.Sprintf(
+		"%s: its agent has stopped without escalating or finishing — nothing nm writes "+
+			"can reach a blocked agent, so look at it with: claude attach %s",
+		id, agentOrDir(agentID, t.Dir)))
+}
+
+func agentOrDir(id, dir string) string {
+	if id != "" {
+		return id
+	}
+	return "<id unknown; the task is at " + dir + ">"
 }
 
 // reviewToApproved is step 3: review -> approved when a human has approved, and

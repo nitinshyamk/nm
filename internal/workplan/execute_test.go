@@ -22,6 +22,7 @@ type fakeAgents struct {
 	dirs     []string
 	next     int
 	live     map[string]bool
+	stalled  map[string]bool
 	failWith error
 }
 
@@ -41,6 +42,8 @@ func (f *fakeAgents) Launch(dir, _, prompt string, _ []string) (string, error) {
 }
 
 func (f *fakeAgents) Alive(id, _ string) bool { return f.live[id] }
+
+func (f *fakeAgents) Stalled(id, _ string) bool { return f.stalled[id] }
 
 // count returns how many agents were launched with a prompt naming the skill.
 func (f *fakeAgents) count(skill string) int {
@@ -95,7 +98,7 @@ func newHarness(t *testing.T, repos ...string) *harness {
 	return &harness{
 		cfg:    cfg,
 		w:      w,
-		agents: &fakeAgents{live: map[string]bool{}},
+		agents: &fakeAgents{live: map[string]bool{}, stalled: map[string]bool{}},
 		review: &fakeReview{byBranch: map[string]*forge.Status{}},
 		now:    fixedNow()(),
 	}
@@ -974,4 +977,72 @@ func taskEnv(t *testing.T, repos ...string) config.Config {
 	cfg.TasksRoot = filepath.Join(root, "tasks")
 	cfg.WorkplansRoot = filepath.Join(root, "workplans")
 	return cfg
+}
+
+// A task whose agent has stopped without escalating or finishing is otherwise
+// invisible: it looks exactly like a task being worked on. nm cannot fix it — a
+// blocked agent is waiting on stdin, so nothing written to its escalations
+// directory reaches it — so saying so is the entire remedy.
+func TestStuckAgentWithNothingOpenIsReported(t *testing.T) {
+	h := newHarness(t, "nm")
+	h.add(t, def2("01-a", "nm"))
+	h.run(t, false)
+
+	// The agent stops with no escalation and no ready marker.
+	h.agents.live = map[string]bool{}
+	h.agents.stalled = map[string]bool{"agent1": true}
+
+	result := h.run(t, false)
+
+	if len(result.Problems) == 0 {
+		t.Fatal("a stuck agent was not reported, so the workplan stops silently")
+	}
+	joined := strings.Join(result.Problems, "\n")
+	if !strings.Contains(joined, "01-a") {
+		t.Errorf("the problem does not name the task:\n%s", joined)
+	}
+	// It has to say what to do, because nm cannot do anything about it.
+	if !strings.Contains(joined, "claude attach") {
+		t.Errorf("the problem does not say how to look at the agent:\n%s", joined)
+	}
+	if got := h.stateOf(t, "01-a"); got != InProgress {
+		t.Errorf("state = %s; a stuck task must stay where it is", got)
+	}
+}
+
+// An agent that stopped *after* escalating is a different, already-reported state,
+// and must not also be reported as stuck.
+func TestAnAgentBlockedOnAnOpenEscalationIsNotReportedAsStuck(t *testing.T) {
+	h := newHarness(t, "nm")
+	h.add(t, def2("01-a", "nm"))
+	h.run(t, false)
+
+	found := h.taskFor(t, "01-a")
+	if err := os.WriteFile(
+		filepath.Join(found.Escalations(h.cfg), "2026-05-01-08-34-02.md"),
+		[]byte("which option?"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.agents.live = map[string]bool{}
+	h.agents.stalled = map[string]bool{"agent1": true}
+
+	result := h.run(t, false)
+
+	for _, p := range result.Problems {
+		if strings.Contains(p, "without escalating") {
+			t.Errorf("an agent waiting on its own escalation was reported as stuck: %s", p)
+		}
+	}
+}
+
+// A working agent is not stuck, and must not be reported every minute.
+func TestAWorkingAgentIsNotReported(t *testing.T) {
+	h := newHarness(t, "nm")
+	h.add(t, def2("01-a", "nm"))
+	h.run(t, false)
+
+	result := h.run(t, false) // agent1 is still live, not stalled
+	if len(result.Problems) != 0 {
+		t.Errorf("a working agent produced problems: %v", result.Problems)
+	}
 }
