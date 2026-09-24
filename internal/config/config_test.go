@@ -90,8 +90,10 @@ func TestLoadAddsWorkplansRootToAnOlderConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.WorkplansRoot != Defaults().WorkplansRoot {
-		t.Errorf("WorkplansRoot = %q, want the default %q", cfg.WorkplansRoot, Defaults().WorkplansRoot)
+	// Derived from tasks_root, not the literal default: a user who moved their
+	// roots to C:/repos should not get workplans under ~/projects.
+	if cfg.WorkplansRoot != "C:/repos/workplans" {
+		t.Errorf("WorkplansRoot = %q, want C:/repos/workplans, beside the configured tasks_root", cfg.WorkplansRoot)
 	}
 	if cfg.ProjectsRoot != "C:/repos" {
 		t.Errorf("ProjectsRoot = %q, want the value already in the file", cfg.ProjectsRoot)
@@ -116,6 +118,56 @@ func TestLoadAddsWorkplansRootToAnOlderConfig(t *testing.T) {
 	for _, key := range []string{"workplans_root", "escalations_dir"} {
 		if _, ok := back[key]; !ok {
 			t.Errorf("Load did not persist %s", key)
+		}
+	}
+}
+
+// A workplans_root the user set is theirs, even when it equals the default.
+func TestLoadNeverOverridesAConfiguredWorkplansRoot(t *testing.T) {
+	for _, want := range []string{"D:/elsewhere/plans", "~/projects/workplans"} {
+		t.Run(want, func(t *testing.T) {
+			path := configAt(t)
+			body := `{"tasks_root": "C:/repos/tasks", "workplans_root": "` + want + `"}`
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.WorkplansRoot != want {
+				t.Errorf("WorkplansRoot = %q, want the configured %q", cfg.WorkplansRoot, want)
+			}
+		})
+	}
+}
+
+// A fresh install has no file to derive from and takes the defaults verbatim.
+func TestDefaultsKeepWorkplansBesideTasks(t *testing.T) {
+	configAt(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.WorkplansRoot != "~/projects/workplans" {
+		t.Errorf("WorkplansRoot = %q, want ~/projects/workplans", cfg.WorkplansRoot)
+	}
+}
+
+func TestSiblingOf(t *testing.T) {
+	cases := map[string]string{
+		"C:/repos/tasks":    "C:/repos",
+		`C:\repos\tasks`:    "C:/repos",
+		"~/projects/tasks":  "~/projects",
+		"~/projects/tasks/": "~/projects",
+		"/var/lib/nm/tasks": "/var/lib/nm",
+		"tasks":             "",
+		"":                  "",
+		"/tasks":            "",
+	}
+	for in, want := range cases {
+		if got := siblingOf(in); got != want {
+			t.Errorf("siblingOf(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
