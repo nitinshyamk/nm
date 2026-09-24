@@ -305,3 +305,55 @@ func TestPlural(t *testing.T) {
 		}
 	}
 }
+
+// `nm task new` with no repositories and no --taskfile is a command line that
+// lost its arguments, and must say so rather than making an empty task.
+func TestTaskNewStillRequiresARepository(t *testing.T) {
+	isolatedConfig(t)
+	out, err := runNM(t, "task", "new", "-n", "empty")
+	if err == nil {
+		t.Fatalf("task new with no repositories succeeded:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "taskfile") {
+		t.Errorf("the error should mention the --taskfile alternative: %v", err)
+	}
+}
+
+// --no-agent is what makes a task with a definition inspectable before it is
+// handed to an agent, and is how the tests below avoid launching real ones.
+func TestTaskNewWithTaskfileAndNoAgent(t *testing.T) {
+	cfg := isolatedConfig(t)
+	def := filepath.Join(t.TempDir(), "01-a.json")
+	body := `{"id":"01-a","predecessors":[],"repositories":[],` +
+		`"description":"Clarify something.","acceptance-criteria":["Recorded."]}`
+	if err := os.WriteFile(def, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runNM(t, "task", "new", "-n", "01-a", "--taskfile", def, "--no-agent")
+	if err != nil {
+		t.Fatalf("task new --taskfile: %v\n%s", err, out)
+	}
+
+	// A zero-repository task is a real case, and must say so rather than looking
+	// like a mistake.
+	if !strings.Contains(out, "no repositories") {
+		t.Errorf("output does not mention the empty repository list:\n%s", out)
+	}
+	// The generated prompt is shown, so --no-agent is actionable rather than a
+	// dead end.
+	if !strings.Contains(out, "/nm-task-execute the task in input/01-a.json") {
+		t.Errorf("output does not show the generated prompt:\n%s", out)
+	}
+
+	entries, err := os.ReadDir(cfg.Tasks())
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("expected one task directory, got %v (%v)", entries, err)
+	}
+	dir := filepath.Join(cfg.Tasks(), entries[0].Name())
+	for _, rel := range []string{"input/01-a.json", "escalations", "artifacts", "scratch"} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("%s is missing: %v", rel, err)
+		}
+	}
+}
