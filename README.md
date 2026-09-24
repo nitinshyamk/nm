@@ -300,6 +300,39 @@ names the repositories it touches, the tasks that have to land before it, and
 the acceptance criteria that say when it is done; one that is unblocked becomes
 an ordinary task directory with a background agent working it.
 
+### The commands
+
+In the order you meet them: you scope a plan once, then run it repeatedly.
+
+| Command | What it does |
+|---|---|
+| `nm workplan define -n <name> [-a <path>]` | Create an empty workplan — one directory per state, plus `escalations/` and `artifacts/`. `-a` copies in the design the tasks were scoped against |
+| `nm workplan add <workplan> --content <json>` | Validate one task definition and write it to `planned/`. `--content` takes JSON, `@<file>`, or `-` for stdin |
+| `nm workplan verify <workplan>` | Check schema, that predecessors and repositories resolve, and that the plan is acyclic — reporting every problem at once |
+| `nm workplan list` | Show every workplan and how many tasks sit in each state. What `nm workplan` prints on its own |
+| `nm workplan execute <workplan> [--merge]` | One pass: move what is ready, start what is unblocked, print what changed. Silent when nothing did, so it is safe on a timer. Only `--merge` allows the last transition into `completed` |
+| `nm workplan resolve <workplan>` | Deliver escalation answers down to the task directories waiting on them |
+| `nm workplan await-resolution <file> [--timeout <d>]` | Block until one escalation is answered. For an agent, not for you |
+
+`define`, `add`, and `verify` scope the work; the rest run it. `nm workplan
+--help` draws the same split, alphabetized within each half.
+
+Two of these are worth expanding on. **`execute` is a reconciler, not a job
+runner** — every pass reads the filesystem and GitHub from scratch, so a pass
+that was interrupted is repaired by running it again rather than cleaned up
+after, and nothing reaches your default branch unless you pass `--merge`.
+
+**`await-resolution` is the one command you never type.** When an agent gets
+stuck it writes an escalation and blocks on this, so it waits as one idle process
+instead of waking on a timer to check a file — an agent's wakeup reloads its
+whole context, which makes a polled wait expensive in a way a blocked one is
+not. `nm workplan resolve` is what ends the wait, so the pair is a channel: the
+agent asks, you answer, `resolve` delivers.
+
+> `await-resolution` ships with `resolve`, and may be a release ahead of the
+> binary you have — `nm workplan --help` is the authority on what your build
+> actually has.
+
 ## Configuration — `~/.nm.json`
 
 Created with defaults on first run. Missing keys are filled in on load, and
