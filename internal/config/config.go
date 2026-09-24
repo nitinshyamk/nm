@@ -18,9 +18,11 @@ type Config struct {
 	ProjectsRoot      string `json:"projects_root"`
 	WorktreesRoot     string `json:"worktrees_root"`
 	TasksRoot         string `json:"tasks_root"`
+	WorkplansRoot     string `json:"workplans_root"`
 	ArtifactsDir      string `json:"artifacts_dir"`
 	InputDir          string `json:"input_dir"`
 	ScratchDir        string `json:"scratch_dir"`
+	EscalationsDir    string `json:"escalations_dir"`
 	HashLength        int    `json:"hash_length"`
 	ListRows          int    `json:"list_rows"`
 	PromptRows        int    `json:"prompt_rows"`
@@ -45,9 +47,11 @@ func Defaults() Config {
 		ProjectsRoot:      "~/projects",
 		WorktreesRoot:     "~/projects/worktrees",
 		TasksRoot:         "~/projects/tasks",
+		WorkplansRoot:     "~/projects/workplans",
 		ArtifactsDir:      "artifacts",
 		InputDir:          "input",
 		ScratchDir:        "scratch",
+		EscalationsDir:    "escalations",
 		HashLength:        6,
 		ListRows:          8,
 		PromptRows:        10,
@@ -191,6 +195,12 @@ func (c Config) Worktrees() string { return Expand(c.WorktreesRoot) }
 
 // Tasks returns the expanded directory holding task directories.
 func (c Config) Tasks() string { return Expand(c.TasksRoot) }
+
+// Workplans returns the expanded directory holding workplan directories.
+//
+// Unlike a task, a workplan directory is named for the workplan alone, with no
+// hash: a workplan name is chosen deliberately and typed often.
+func (c Config) Workplans() string { return Expand(c.WorkplansRoot) }
 
 // Install returns the expanded directory the binary installs into.
 func (c Config) Install() string { return Expand(c.InstallDir) }
