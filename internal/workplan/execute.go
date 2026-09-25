@@ -606,11 +606,23 @@ func (p *pass) plannedToInProgress(result *Result) {
 // eligible answers whether a planned task may start, and says what it is waiting
 // for when it may not.
 //
-// The rule, from the design: no predecessors starts immediately; exactly one
-// starts when that predecessor is approved or completed; two or more wait for all
-// of them to be completed. The asymmetry is deliberate — a linear chain should not
-// stall on merge latency, while a fan-in has several branches to integrate and is
-// far safer against merged code.
+// The rule: no predecessors starts immediately; exactly one starts once that
+// predecessor has reached review; two or more wait for all of them to be
+// completed.
+//
+// The asymmetry is deliberate. A linear chain should not stall — a successor
+// stacks on its predecessor's branch, so the work it builds on is there the moment
+// that branch exists, and review latency is the largest delay in the pipeline. A
+// fan-in is different: it has several branches to integrate at once, and one base
+// cannot stack on three predecessors, so it waits for merged code.
+//
+// Review rather than approved is a deliberate relaxation of the gate, and it costs
+// something worth naming: a successor built on a branch that review later changes
+// has to be rebased. That is the trade — the chain keeps moving, and the rework is
+// bounded by how much review alters the predecessor.
+//
+// Whatever states this accepts, stackBase must know how to branch from. The two
+// are one decision, and TestEligibleAndStackBaseAgree holds them together.
 func (p *pass) eligible(t Task) (bool, string) {
 	switch len(t.Predecessors) {
 	case 0:
@@ -618,10 +630,10 @@ func (p *pass) eligible(t Task) (bool, string) {
 	case 1:
 		pred := t.Predecessors[0]
 		switch p.state[pred] {
-		case Approved, Completed:
+		case Review, Approved, Completed:
 			return true, ""
 		default:
-			return false, fmt.Sprintf("waiting for %s to be approved (it is %s)", pred, p.stateOf(pred))
+			return false, fmt.Sprintf("waiting for %s to reach review (it is %s)", pred, p.stateOf(pred))
 		}
 	default:
 		var pending []string
@@ -726,7 +738,7 @@ func (p *pass) stackBase(t Task) (*gitx.Base, error) {
 		return nil, nil
 	}
 	pred := t.Predecessors[0]
-	if p.state[pred] != Approved {
+	if _, stackable := stackableStates()[p.state[pred]]; !stackable {
 		return nil, nil // completed: it is in the base branch already
 	}
 	if len(t.Repositories) == 0 {
@@ -735,8 +747,8 @@ func (p *pass) stackBase(t Task) (*gitx.Base, error) {
 
 	predTask, ok := p.taskDir(pred)
 	if !ok {
-		return nil, fmt.Errorf("predecessor %s is approved but its task directory is gone, "+
-			"so there is nothing to stack on", pred)
+		return nil, fmt.Errorf("predecessor %s is at %s but its task directory is gone, "+
+			"so there is nothing to stack on", pred, p.state[pred])
 	}
 	// Stacking is per repository, and Options carries one base. A task sharing
 	// every repository with its predecessor is the case that matters; anything
@@ -752,6 +764,20 @@ func (p *pass) stackBase(t Task) (*gitx.Base, error) {
 		return nil, fmt.Errorf("reading the head of %s: %w", pred, err)
 	}
 	return &gitx.Base{Branch: first.Branch, Commit: head, Source: "predecessor " + pred}, nil
+}
+
+// stackableStates are the predecessor states whose work exists on a branch but is
+// not in the base branch yet, so a successor has to be stacked on it.
+//
+// Completed is deliberately absent: it is merged, so the ordinary base already
+// contains it and stacking would pin the successor to a branch it does not need.
+//
+// This is the single place the set is written down, because eligible and stackBase
+// are one decision. A state the first accepts and the second does not would start a
+// successor from main, silently missing the work it was scoped to build on — which
+// looks like a successful start rather than a failure.
+func stackableStates() map[State]struct{} {
+	return map[State]struct{}{Review: {}, Approved: {}}
 }
 
 func repoIn(t task.Task, name string) (task.Repo, bool) {

@@ -56,9 +56,11 @@ Three things to get right, because they decide whether the workplan runs:
 - **Order tasks by testability, not only by dependency.** Two tasks with no
   dependency between them still want the one that makes something inspectable
   first, because that is where a wrong assumption surfaces cheaply.
-- **Predecessors are for real blockers.** A task waits for its single predecessor
-  to be *approved*, and for two or more to be *completed*. Every edge you add
-  costs latency, so do not add one for tidiness.
+- **Predecessors are for real blockers.** A task with one predecessor starts once
+  that predecessor reaches *review*, stacking on its branch; a task with two or
+  more waits for all of them to be *completed*, because one base cannot stack on
+  several branches. So a second edge is far more expensive than the first — it
+  trades stacking for waiting on merges. Do not add one for tidiness.
 
 ## 3. Hand it back
 
