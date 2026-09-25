@@ -34,7 +34,7 @@ func (t Transition) String() string {
 type Result struct {
 	Transitions []Transition
 	Escalations []Escalation
-	Refines     []string // task ids handed to a refine agent this pass
+	Refines     []string // task ids whose own agent is actioning review feedback
 	Waiting     []string // human-readable notes about what is blocked, and on what
 	Problems    []string // what went wrong without stopping the pass
 }
@@ -51,16 +51,21 @@ func (r Result) Quiet() bool {
 // Agents is the slice of the agent CLI the orchestrator needs: start one, and say
 // whether one is still alive.
 //
-// An interface so the state machine is testable without launching anything. The
-// refine latch in particular depends on liveness, and a test that had to start a
-// real agent to exercise it would not be run.
+// An interface so the state machine is testable without launching anything, which
+// matters most for liveness: the review step answers "is this task's agent still
+// there" on every pass, and a test that had to start a real agent would not be run.
 type Agents interface {
+	// Launch is called once per task, and once only. A task keeps the agent that
+	// started it for its whole life, including its review rounds.
 	Launch(dir, name, prompt string, addDirs []string) (id string, err error)
+	// Alive distinguishes a task whose agent is waiting on a reviewer from one whose
+	// agent has died with feedback unanswered — the second needs a human, and looks
+	// identical from outside without this.
 	Alive(id, dir string) bool
 	// Stalled reports that an agent exists but is neither working nor finished:
 	// blocked on something, or stopped without saying anything. It is separate
-	// from Alive because the two answer different questions — Alive guards the
-	// refine latch, while this is what makes a stuck agent visible at all.
+	// from Alive because the two answer different questions — this one is about an
+	// agent that is present and going nowhere.
 	Stalled(id, dir string) bool
 }
 
@@ -266,12 +271,16 @@ func agentOrDir(id, dir string) string {
 	return "<id unknown; the task is at " + dir + ">"
 }
 
-// reviewToApproved is step 3: review -> approved when a human has approved, and
-// otherwise a refine round when feedback arrived after the work was published.
+// reviewToApproved is step 3: review -> approved when a human has approved.
 //
-// This is the one transition with no file move to latch it — the task stays in
-// review throughout a refine round — so the latch is written down. See
-// refineLatch.
+// Feedback arriving after the work was published needs nothing from this step. The
+// task's own agent is blocked on `nm workplan await-feedback` and wakes to action it
+// in the session that built the work, so all the orchestrator does is report.
+//
+// That used to be a launch, and it was the one transition nothing latched: the task
+// stays in review throughout, so the trigger held true and a one-minute poller
+// started an agent a minute. A trigger that starts no process cannot re-fire, so the
+// `refining.md` latch went with it.
 func (p *pass) reviewToApproved(result *Result) {
 	for _, placed := range p.tasks {
 		id := placed.Task.ID
@@ -309,15 +318,16 @@ func (p *pass) reviewToApproved(result *Result) {
 			continue
 		}
 
-		// Not approved. Feedback newer than the published timestamp is a refine
-		// round; anything else is waiting on a reviewer.
-		published, err := readStamp(t.Ready(p.opts.Config))
+		// Not approved. The task's own agent is watching for feedback and actions it
+		// in the session that published the work, so there is nothing to start here —
+		// the orchestrator reports rather than intervenes.
+		published, err := ReadStamp(t.Ready(p.opts.Config))
 		if err != nil {
 			result.Problems = append(result.Problems, fmt.Sprintf("%s: %v", id, err))
 			continue
 		}
 		if at, ok := latestFeedback(statuses, published); ok {
-			p.refine(result, t, id, at)
+			p.reportRefining(result, t, id, at)
 			continue
 		}
 		result.Waiting = append(result.Waiting, fmt.Sprintf("%s: waiting on a reviewer", id))
@@ -441,72 +451,45 @@ func latestFeedback(statuses []*forge.Status, since time.Time) (time.Time, bool)
 	return latest, !latest.IsZero()
 }
 
-// refine starts a refine round, subject to the latch.
+// reportRefining says a task has feedback its own agent is dealing with, and
+// escalates when that agent is gone.
 //
-// The latch exists because this is the only transition with nothing to latch it.
-// A task stays in review for the whole round, and the trigger — feedback newer
-// than the published timestamp — stays true until the round finishes and rewrites
-// that timestamp. Without the marker, an orchestrator running every minute would
-// start an agent every minute for the length of the round, each committing over
-// the others in the same worktree.
-func (p *pass) refine(result *Result, t task.Task, id string, feedbackAt time.Time) {
-	marker := t.Refining(p.opts.Config)
-
-	if held, ok := readRefining(marker); ok {
-		switch {
-		case p.opts.Agents.Alive(held.AgentID, t.Dir):
-			// The round is running. This is the latch.
-			result.Waiting = append(result.Waiting,
-				fmt.Sprintf("%s: a refine round is running (agent %s)", id, held.AgentID))
-			return
-		case feedbackAt.After(held.FeedbackAt):
-			// Feedback has arrived that the dead round never saw, so there is
-			// genuinely new work and the round is replaced.
-			if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
-				result.Problems = append(result.Problems, fmt.Sprintf("%s: %v", id, err))
-				return
-			}
-		default:
-			// The agent is gone, the feedback is the same feedback it was started
-			// for, and the timestamp was never advanced: it died mid-round.
-			//
-			// Refusing to relaunch is deliberate. Whatever stopped it will stop
-			// the next one too, and quietly starting another every pass would hide
-			// a repeating failure behind apparent activity — which is the failure
-			// mode this whole latch exists to prevent.
-			//
-			// Comparing against the feedback the round recorded, rather than
-			// against when it started, is what makes this exact: a round launched
-			// in the same instant as the comment that triggered it is not newer
-			// than that comment, so an interval comparison reads it as new work
-			// and relaunches forever.
-			result.Problems = append(result.Problems, fmt.Sprintf(
-				"%s: a refine round started %s ago is gone and never finished — "+
-					"look at %s, then delete it to allow another",
-				id, p.now().Sub(held.StartedAt).Round(time.Second), marker))
-			return
-		}
+// The orchestrator no longer starts anything here, and that is the point. One agent
+// owns a task from its definition to an approved pull request: it publishes, then
+// blocks on `nm workplan await-feedback` in the same session, so it actions a
+// reviewer's comment already knowing what it built and why. Launching a second agent
+// was what made two processes possible in one worktree — nothing latched the handoff
+// between the first agent and its replacement, so a task whose agent had written
+// ready-to-review.md but not yet exited got a second one committing beside it.
+//
+// The `refining.md` latch that guarded the old respawn is gone with it. There is
+// nothing left to latch: a trigger that starts no process cannot re-fire.
+//
+// What is left is the case the latch could not fix anyway. An agent that died while
+// its pull request has unanswered feedback needs a human, because nothing else is
+// watching that task — and unlike a stalled agent, this one is invisible: the task
+// sits in review looking exactly like one waiting on a slow reviewer.
+func (p *pass) reportRefining(result *Result, t task.Task, id string, feedbackAt time.Time) {
+	agentID := ""
+	if t.Agent != nil {
+		agentID = t.Agent.ID
 	}
 
-	// The same skill that did the work actions the feedback on it: its §1 reads the
-	// directory to tell a fresh task from one already in review, so the prompt does
-	// not have to. The agent name still says "refine", because that is what
-	// distinguishes this round in `nm agents` and in the marker below.
-	prompt := task.TaskFilePrompt(p.opts.Config, t)
-	agentID, err := p.opts.Agents.Launch(t.Dir, "nm-refine-"+t.Label(), prompt, t.Dirs())
-	if err != nil {
-		result.Problems = append(result.Problems, fmt.Sprintf("%s: starting a refine round: %v", id, err))
+	if p.opts.Agents.Alive(agentID, t.Dir) {
+		result.Refines = append(result.Refines, id)
+		result.Waiting = append(result.Waiting, fmt.Sprintf(
+			"%s: its agent is actioning feedback from %s (agent %s)",
+			id, feedbackAt.Format(time.RFC3339), agentID))
 		return
 	}
-	if err := writeRefining(marker, refining{AgentID: agentID, StartedAt: p.now(), FeedbackAt: feedbackAt}); err != nil {
-		// The agent is already running, so this is reported rather than fatal —
-		// but it does mean the next pass may start a second one, which is worth
-		// saying out loud.
-		result.Problems = append(result.Problems, fmt.Sprintf(
-			"%s: a refine agent started but its marker could not be written (%v); "+
-				"another pass may start a second one", id, err))
-	}
-	result.Refines = append(result.Refines, id)
+
+	// No agent, and a reviewer is waiting. Reported rather than fixed: starting a
+	// replacement is what this change removed, and doing it here quietly would
+	// rebuild the overlap through the back door.
+	result.Problems = append(result.Problems, fmt.Sprintf(
+		"%s: a reviewer left feedback at %s but its agent is gone, so nothing is "+
+			"actioning it — restart the task's agent in %s, or answer the review by hand",
+		id, feedbackAt.Format(time.RFC3339), t.Dir))
 }
 
 // approvedToCompleted is step 4: merge, when asked to.
@@ -792,12 +775,16 @@ func repoIn(t task.Task, name string) (task.Repo, bool) {
 	return task.Repo{}, false
 }
 
-// readStamp reads the timestamp out of a marker file.
+// ReadStamp reads the timestamp out of a marker file.
 //
 // A marker with no parseable time is an error rather than a zero time: a zero
 // time would make every comment ever left look newer than the work, so every pass
-// would start a refine round.
-func readStamp(path string) (time.Time, error) {
+// would treat every comment ever left as new.
+//
+// Exported because await-feedback has to read the same marker the same way. "Newer
+// than the work" must mean one thing, or the agent and the orchestrator disagree
+// about what a reviewer has already been answered on.
+func ReadStamp(path string) (time.Time, error) {
 	blob, err := os.ReadFile(path)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("reading %s: %w", filepath.Base(path), err)
@@ -833,60 +820,13 @@ func parseStamp(s string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// refining is the content of the refine latch.
-type refining struct {
-	AgentID    string    `json:"agent_id"`
-	StartedAt  time.Time `json:"started_at"`
-	FeedbackAt time.Time `json:"feedback_at"`
-}
-
-func writeRefining(path string, r refining) error {
-	body := fmt.Sprintf(`# Refine round in progress
-
-started: %s
-agent: %s
-feedback through: %s
-
-Written by nm workplan execute. It is what stops a second refine agent from
-starting in this worktree while this one is working. Delete it only if the agent
-is gone and you have decided the round should start again.
-`, r.StartedAt.Format(time.RFC3339), r.AgentID, r.FeedbackAt.Format(time.RFC3339))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(body), 0o644)
-}
-
-// readRefining reads the latch. A file that exists but cannot be understood is
-// still a latch: it means someone or something claimed this worktree, and the
-// safe reading is that a round is in progress.
-func readRefining(path string) (refining, bool) {
-	blob, err := os.ReadFile(path)
-	if err != nil {
-		return refining{}, false
-	}
-	r := refining{}
-	for _, line := range strings.Split(string(blob), "\n") {
-		field, value, found := strings.Cut(strings.TrimSpace(line), ":")
-		if !found {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		switch strings.ToLower(strings.TrimSpace(field)) {
-		case "started":
-			if at, ok := parseStamp(value); ok {
-				r.StartedAt = at
-			}
-		case "agent":
-			r.AgentID = value
-		case "feedback through":
-			if at, ok := parseStamp(value); ok {
-				r.FeedbackAt = at
-			}
-		}
-	}
-	return r, true
-}
+// The refine latch is gone. It stopped a one-minute poller from starting one agent
+// per pass during a refine round; now that a task keeps the agent that published it
+// and the orchestrator starts nothing on feedback, there is no round to latch.
+//
+// task.RefiningFile survives so escalation collection keeps skipping a marker left
+// by an older nm, which would otherwise be read as an escalation and shown to a
+// human every pass.
 
 // plural renders a count with its noun.
 func plural(n int, one, many string) string {

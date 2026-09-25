@@ -11,6 +11,7 @@ import (
 	"github.com/nitinshyamk/nm/internal/agent"
 	"github.com/nitinshyamk/nm/internal/config"
 	"github.com/nitinshyamk/nm/internal/forge"
+	"github.com/nitinshyamk/nm/internal/task"
 	"github.com/nitinshyamk/nm/internal/workplan"
 	"github.com/spf13/cobra"
 )
@@ -343,4 +344,104 @@ func newWorkplanAwaitCmd() *cobra.Command {
 		"how long to wait before giving up (0 waits forever)")
 	_ = cmd.RegisterFlagCompletionFunc("timeout", cobra.NoFileCompletions)
 	return cmd
+}
+
+func newWorkplanAwaitFeedbackCmd() *cobra.Command {
+	var (
+		timeout time.Duration
+		since   string
+	)
+	cmd := &cobra.Command{
+		Use:     "await-feedback",
+		GroupID: groupPlanRun,
+		Short:   "Block until a reviewer acts on this task's pull request",
+		Long: "Run from a task directory after publishing. Waits for a reviewer to\n" +
+			"comment, approve, or merge, then prints the verdict and exits zero:\n\n" +
+			"  feedback nm#12 at 2026-05-01T09:12:44Z   action it, then wait again\n" +
+			"  approved nm#12                           the task is done\n" +
+			"  merged   nm#12                           already in the base branch\n\n" +
+			"This is what lets one agent own a task end to end rather than exiting\n" +
+			"after publishing and being replaced for each review round. A replacement\n" +
+			"loses everything the first agent knew and can overlap with it in the same\n" +
+			"worktree.\n\n" +
+			"Unlike await-resolution, which stats a local file, every check here spends\n" +
+			"a GitHub call — so the interval widens as the wait goes on: every 30s for\n" +
+			"5m, then every 2m for 20m, then every 10m for 2h, then hourly. A reviewer\n" +
+			"who just looked is likely to say more within minutes; one who has been\n" +
+			"quiet for hours is on another day. Statuses are cached briefly on disk, so\n" +
+			"a waiting agent and an orchestrator pass do not both pay for the same read.\n\n" +
+			"Times out after 12h by default, which is a resumable outcome and not a\n" +
+			"failure: the pull request is still open and still in review, so run this\n" +
+			"again to keep waiting rather than letting the agent be replaced.",
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			found, err := task.Current(cfg)
+			if err != nil {
+				return err
+			}
+
+			// Default to the published timestamp, so "newer than the work" means the
+			// same thing here as it does to the orchestrator. Anything older would
+			// replay comments the agent has already dealt with.
+			from, err := feedbackSince(cfg, found, since)
+			if err != nil {
+				return err
+			}
+
+			// Cached, so the waiting agent and the orchestrator's own pass do not
+			// each spend a call on the same pull request. The cache lives beside the
+			// task rather than in the workplan, because a task directory is what this
+			// command can always find.
+			reviewer := workplan.CachedReviewer{
+				Inner: forge.Client{Bin: cfg.GHCommand},
+				Dir:   found.Dir,
+			}
+
+			verdict, err := workplan.AwaitFeedback(cmd.Context(), reviewer, found, from, timeout)
+			if err != nil {
+				if errors.Is(err, workplan.ErrFeedbackTimeout) {
+					return fmt.Errorf("%w after %s; the pull request is still open and still "+
+						"in review, so run this again to keep waiting", err, timeout)
+				}
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), verdict)
+			return nil
+		},
+	}
+	// Twelve hours, not forever. A held session is the cost of one agent owning the
+	// task, and an unbounded wait makes that cost unbounded too — a pull request
+	// nobody ever reviews would pin an agent until the machine restarted. Half a day
+	// covers an overnight review without leaving anything pinned indefinitely, and
+	// the timeout is a resumable outcome rather than a failure: the skill is told to
+	// run this again, so waiting continues without the agent being replaced.
+	cmd.Flags().DurationVar(&timeout, "timeout", 12*time.Hour,
+		"how long to wait before giving up (0 waits forever)")
+	cmd.Flags().StringVar(&since, "since", "",
+		"only count feedback newer than this RFC 3339 time (default: the ready-to-review timestamp)")
+	_ = cmd.RegisterFlagCompletionFunc("timeout", cobra.NoFileCompletions)
+	_ = cmd.RegisterFlagCompletionFunc("since", cobra.NoFileCompletions)
+	return cmd
+}
+
+// feedbackSince resolves what "new" feedback means for this wait.
+func feedbackSince(cfg config.Config, t task.Task, flag string) (time.Time, error) {
+	if flag != "" {
+		at, err := time.Parse(time.RFC3339, flag)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("reading --since: %w", err)
+		}
+		return at, nil
+	}
+	at, err := workplan.ReadStamp(t.Ready(cfg))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w; publish and write ready-to-review.md before waiting, "+
+			"or pass --since", err)
+	}
+	return at, nil
 }

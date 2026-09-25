@@ -279,171 +279,120 @@ func TestEligibilityBoundaries(t *testing.T) {
 	}
 }
 
-// THE test for §5.5.1: a task in review with actionable feedback must launch
-// exactly one refine agent, no matter how many passes run while it works.
-func TestRefineLaunchesExactlyOneAgentAcrossManyPasses(t *testing.T) {
+// THE test for one agent per task: a worktree never holds two.
+//
+// This is what the refine latch used to approximate and could not guarantee. The
+// latch stopped a second *refine* agent, but nothing stopped a refine agent from
+// joining the original one — an agent that had written ready-to-review.md and not yet
+// exited was live in the same worktree as its replacement, both committing. Now the
+// orchestrator starts nothing on feedback, so there is only ever one.
+func TestOneAgentPerTaskAcrossItsWholeLife(t *testing.T) {
 	h := newHarness(t, "nm")
-	h.add(t, Task{
-		ID: "01-a", Repositories: []string{"nm"},
-		Description: "Do it.", AcceptanceCriteria: []string{"Done."},
-	})
-	h.run(t, false) // start it
+	h.add(t, def2("01-a", "nm"))
+	h.run(t, false) // the one launch: agent1, still live
 
 	published := h.now
 	h.markReady(t, "01-a", published)
 	h.run(t, false) // in-progress -> review
 
-	// A reviewer comments after the work was published.
-	h.comment(t, "01-a", published.Add(time.Minute))
-
-	for pass := range 10 {
-		h.now = h.now.Add(time.Minute)
-		result := h.run(t, false)
-		if pass > 0 && len(result.Refines) != 0 {
-			t.Errorf("pass %d started another refine round: %v", pass+1, result.Refines)
+	// Round after round of feedback, with the agent still working throughout.
+	for round := range 3 {
+		h.comment(t, "01-a", published.Add(time.Duration(round+1)*time.Minute))
+		for pass := range 5 {
+			h.now = h.now.Add(time.Minute)
+			result := h.run(t, false)
+			if len(result.Problems) != 0 {
+				t.Fatalf("round %d pass %d: %v", round, pass, result.Problems)
+			}
 		}
 	}
 
-	if got := h.agents.refines(); got != 1 {
-		t.Fatalf("launched %d refine agents across ten passes, want exactly 1:\n%v",
+	if got := len(h.agents.names); got != 1 {
+		t.Errorf("launched %d agents over fifteen passes, want exactly 1: %v",
 			got, h.agents.names)
 	}
-	// And it stayed in review throughout, which is why nothing latched it.
+	if got := h.agents.refines(); got != 0 {
+		t.Errorf("the orchestrator started %d refine agents; it must start none", got)
+	}
 	if got := h.stateOf(t, "01-a"); got != Review {
 		t.Errorf("state = %s, want review", got)
 	}
 }
 
-// A refine round launches the one task skill, with the ordinary task-file prompt.
-//
-// Actioning feedback is a phase of /nm-task-execute rather than a skill of its
-// own, so there is nothing else to launch — and the prompt must not try to say
-// which phase to run, because the skill reads that off the task directory. A
-// prompt naming a skill that is no longer installed fails mid-round, unattended.
-func TestARefineRoundLaunchesTheTaskSkill(t *testing.T) {
+// Feedback for a live agent is reported, not acted on: it is already handling it.
+func TestFeedbackForALiveAgentIsReportedNotRelaunched(t *testing.T) {
 	h := newHarness(t, "nm")
 	h.add(t, def2("01-a", "nm"))
 	h.run(t, false)
 	published := h.now
 	h.markReady(t, "01-a", published)
 	h.run(t, false)
+
 	h.comment(t, "01-a", published.Add(time.Minute))
-
 	h.now = h.now.Add(time.Minute)
-	h.run(t, false)
-
-	if got := h.agents.refines(); got != 1 {
-		t.Fatalf("refine agents = %d, want 1", got)
-	}
-	// Both launches — the start and the refine round — say the same thing.
-	want := task.TaskFilePrompt(h.cfg, h.taskFor(t, "01-a"))
-	for i, prompt := range h.agents.launched {
-		if prompt != want {
-			t.Errorf("launch %d (%s) prompted %q, want %q", i, h.agents.names[i], prompt, want)
-		}
-	}
-	if strings.Contains(strings.Join(h.agents.launched, "\n"), "nm-task-refine") {
-		t.Error("a launch still names nm-task-refine, which is no longer installed")
-	}
-}
-
-// A refine agent that died without finishing must not be silently replaced: a
-// repeating failure hidden behind apparent activity is the worst outcome.
-func TestRefineReportsACrashedRoundRatherThanRelaunching(t *testing.T) {
-	h := newHarness(t, "nm")
-	h.add(t, def2("01-a", "nm"))
-	h.run(t, false)
-	published := h.now
-	h.markReady(t, "01-a", published)
-	h.run(t, false)
-	h.comment(t, "01-a", published.Add(time.Minute))
-
-	h.now = h.now.Add(time.Minute)
-	h.run(t, false) // starts the round
-	if got := h.agents.refines(); got != 1 {
-		t.Fatalf("refine agents = %d, want 1", got)
-	}
-
-	// The agent dies without advancing ready-to-review.
-	h.agents.live = map[string]bool{}
-	h.now = h.now.Add(10 * time.Minute)
 	result := h.run(t, false)
 
-	if got := h.agents.refines(); got != 1 {
-		t.Errorf("a dead refine round was silently relaunched (%d agents)", got)
+	if len(result.Refines) != 1 {
+		t.Errorf("refines = %v, want the task named as being refined", result.Refines)
 	}
-	if len(result.Problems) == 0 {
-		t.Fatal("a crashed refine round was not reported")
-	}
-	joined := strings.Join(result.Problems, "\n")
-	if !strings.Contains(joined, "never finished") || !strings.Contains(joined, task.RefiningFile) {
-		t.Errorf("the problem does not say what happened or what to do:\n%s", joined)
-	}
-}
-
-// A finished round advances the timestamp, which releases the latch and leaves
-// the task waiting on a reviewer again.
-func TestRefineLatchClearsWhenTheRoundFinishes(t *testing.T) {
-	h := newHarness(t, "nm")
-	h.add(t, def2("01-a", "nm"))
-	h.run(t, false)
-	published := h.now
-	h.markReady(t, "01-a", published)
-	h.run(t, false)
-	h.comment(t, "01-a", published.Add(time.Minute))
-
-	h.now = h.now.Add(2 * time.Minute)
-	h.run(t, false) // round starts
-
-	// The agent finishes: it advances the timestamp and exits.
-	h.agents.live = map[string]bool{}
-	finished := h.now.Add(time.Minute)
-	found := h.taskFor(t, "01-a")
-	if err := os.Remove(found.Ready(h.cfg)); err != nil {
-		t.Fatal(err)
-	}
-	h.markReady(t, "01-a", finished)
-
-	h.now = h.now.Add(5 * time.Minute)
-	result := h.run(t, false)
-
-	if got := h.agents.refines(); got != 1 {
-		t.Errorf("refine agents = %d, want still 1 — the feedback is older than the new timestamp", got)
+	if !containsSubstring(result.Waiting, "actioning feedback") {
+		t.Errorf("waiting = %v, want it to say the agent is on it", result.Waiting)
 	}
 	if len(result.Problems) != 0 {
-		t.Errorf("a finished round reported problems: %v", result.Problems)
-	}
-	if !containsSubstring(result.Waiting, "waiting on a reviewer") {
-		t.Errorf("waiting = %v, want it to say the task is with a reviewer", result.Waiting)
+		t.Errorf("a live agent with feedback is not a problem: %v", result.Problems)
 	}
 }
 
-// Feedback newer than a dead round is genuinely new work, so the round is
-// replaced rather than reported as crashed.
-func TestRefineRestartsWhenNewFeedbackArrivesAfterADeadRound(t *testing.T) {
+// An agent that died with feedback unanswered must be reported, because nothing
+// else is watching that task and it looks exactly like waiting on a slow reviewer.
+//
+// Reported rather than replaced: starting a replacement is what allowed two agents
+// in one worktree, and doing it here would rebuild that through the back door.
+func TestADeadAgentWithUnansweredFeedbackIsReported(t *testing.T) {
 	h := newHarness(t, "nm")
 	h.add(t, def2("01-a", "nm"))
 	h.run(t, false)
 	published := h.now
 	h.markReady(t, "01-a", published)
 	h.run(t, false)
+
+	h.agents.live = map[string]bool{} // it died
 	h.comment(t, "01-a", published.Add(time.Minute))
-
-	h.now = h.now.Add(2 * time.Minute)
-	h.run(t, false) // round starts
-	roundStarted := h.now
-
-	// The agent dies, and then a reviewer comments again.
-	h.agents.live = map[string]bool{}
-	h.comment(t, "01-a", roundStarted.Add(time.Minute))
-	h.now = h.now.Add(5 * time.Minute)
+	h.now = h.now.Add(time.Minute)
 	result := h.run(t, false)
 
-	if got := h.agents.refines(); got != 2 {
-		t.Errorf("refine agents = %d, want 2: new feedback after a dead round is new work", got)
+	if len(result.Problems) == 0 {
+		t.Fatal("a dead agent with a reviewer waiting was not reported")
 	}
-	if len(result.Refines) != 1 {
-		t.Errorf("refines = %v, want the task to have been refined", result.Refines)
+	joined := strings.Join(result.Problems, "\n")
+	for _, want := range []string{"agent is gone", "nothing is actioning it"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the problem does not say %q:\n%s", want, joined)
+		}
+	}
+	// And still no replacement.
+	if got := len(h.agents.names); got != 1 {
+		t.Errorf("launched %d agents, want 1: a dead agent is not silently replaced", got)
+	}
+}
+
+// Approval is not feedback, and must not be reported as a refine round.
+func TestApprovalIsNotReportedAsRefining(t *testing.T) {
+	h := newHarness(t, "nm")
+	h.add(t, def2("01-a", "nm"))
+	h.run(t, false)
+	h.markReady(t, "01-a", h.now)
+	h.run(t, false)
+
+	h.approve(t, "01-a", 42)
+	h.now = h.now.Add(time.Minute)
+	result := h.run(t, false)
+
+	if len(result.Refines) != 0 {
+		t.Errorf("an approval was reported as refining: %v", result.Refines)
+	}
+	if got := h.stateOf(t, "01-a"); got != Approved {
+		t.Errorf("state = %s, want approved", got)
 	}
 }
 
@@ -924,7 +873,7 @@ func TestReadStamp(t *testing.T) {
 			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			at, err := readStamp(path)
+			at, err := ReadStamp(path)
 			if err != nil {
 				t.Fatalf("readStamp: %v", err)
 			}
@@ -940,7 +889,7 @@ func TestReadStamp(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# Ready\n\nno date here\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readStamp(path); err == nil {
+	if _, err := ReadStamp(path); err == nil {
 		t.Error("readStamp accepted a marker with no timestamp")
 	}
 }

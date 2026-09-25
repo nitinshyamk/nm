@@ -340,3 +340,38 @@ func TestBranchPrefixDoesNotReachTheDirectoryName(t *testing.T) {
 		t.Errorf("DirName = %q, which is a path separator away from being two directories", got)
 	}
 }
+
+// An agent runs inside its worktree, one level below the task directory, so Current
+// has to walk up to find the record rather than requiring the task be named.
+func TestCurrentFindsTheTaskFromInsideAWorktree(t *testing.T) {
+	cfg := env(t, "nm")
+	created, err := Create(cfg, Options{Name: "probe", Repos: []string{"nm"}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// From the task directory itself, and from the worktree inside it.
+	for _, from := range []string{created.Dir, created.Repos[0].Dir} {
+		t.Chdir(from)
+		found, err := Current(cfg)
+		if err != nil {
+			t.Fatalf("Current from %s: %v", from, err)
+		}
+		if found.Name != "probe" {
+			t.Errorf("from %s: found %q, want probe", from, found.Name)
+		}
+	}
+}
+
+// Outside a task it says so, because "no task here" is the normal answer when a
+// command is run from the wrong place and a bare failure reads as a broken command.
+func TestCurrentSaysWhenThereIsNoTask(t *testing.T) {
+	env(t)
+	t.Chdir(t.TempDir())
+
+	if _, err := Current(config.Config{}); err == nil {
+		t.Fatal("Current found a task outside any task directory")
+	} else if !strings.Contains(err.Error(), MetaFile) {
+		t.Errorf("the error does not name what was missing: %v", err)
+	}
+}
