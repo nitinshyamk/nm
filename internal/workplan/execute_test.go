@@ -370,9 +370,19 @@ func TestADeadAgentWithUnansweredFeedbackIsReported(t *testing.T) {
 			t.Errorf("the problem does not say %q:\n%s", want, joined)
 		}
 	}
-	// And still no replacement.
+	// It asks for a human rather than naming a remedy. The remedy depends on why the
+	// agent died, and a message that reads like an instruction invites the poller to
+	// follow it — which is how an automatic restart loop gets built by accident.
+	if !strings.Contains(joined, "manual review") {
+		t.Errorf("the problem does not ask for manual review:\n%s", joined)
+	}
+	// And still no replacement, this pass or any later one.
+	for range 5 {
+		h.now = h.now.Add(time.Minute)
+		h.run(t, false)
+	}
 	if got := len(h.agents.names); got != 1 {
-		t.Errorf("launched %d agents, want 1: a dead agent is not silently replaced", got)
+		t.Errorf("launched %d agents, want 1: a dead agent is never replaced", got)
 	}
 }
 

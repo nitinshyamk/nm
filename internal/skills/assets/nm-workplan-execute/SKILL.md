@@ -55,10 +55,29 @@ Each pass, report only what changed:
   `merged #1421`).
 - **Escalations** — with their full content. Whoever reads this has to decide
   something, and summarizing it would make them open the file anyway.
-- **Problems** — including the one that matters most: *"a refine round started N
-  ago is gone and never finished"*. That means an agent died mid-round and the
-  orchestrator is deliberately refusing to start another, because whatever killed
-  the first will kill the next. Surface it; do not try to work around it.
+- **Problems** — including the two that matter most, both of which mean a task has
+  lost its agent. Surface them and **do not work around either one**:
+
+  - *"its agent is gone, so nothing is actioning it"* — a reviewer commented and the
+    agent that owned the task has died. Nobody is reading that comment.
+  - *"its agent has stopped without escalating or finishing"* — the agent is present
+    but going nowhere.
+
+**Never restart a task's agent yourself.** Not with `claude`, not by re-running
+anything, not by editing the task directory to make the orchestrator start something.
+A task gets one agent for its whole life, and that is what keeps two from committing
+in the same worktree — a second one started by hand reintroduces exactly the failure
+the design removed.
+
+These cases are for a **human** to look at, and they are rare enough to be worth the
+interruption. Report the task id, the task directory, and what the agent was last
+doing, then say plainly that it needs manual review — the fix is usually `claude
+attach <id>` to see why it died, and whether the work so far is sound. Ask the user
+what they want to do and wait for an answer; do not pick for them.
+
+The reason to be strict here: whatever killed the first agent will very likely kill
+its replacement, and a restart loop hides a repeating failure behind apparent
+activity. That is the one outcome this whole loop exists to prevent.
 
 Say nothing when the pass says nothing. Sixty "no change" reports an hour is noise
 the user then has to filter.

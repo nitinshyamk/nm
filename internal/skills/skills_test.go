@@ -631,6 +631,49 @@ func TestTaskExecutePrefixesItsPullRequestComments(t *testing.T) {
 	}
 }
 
+// The orchestration skill must refuse to restart a task's agent, and hand the case
+// to a human instead.
+//
+// It is the one actor in the system with both the means and the motive: it reads the
+// problem saying a task has lost its agent, it can run `claude`, and "fix it" looks
+// like helpfulness. Doing so would put a second agent in a worktree that may still
+// hold the first, and whatever killed that one will very likely kill the replacement —
+// so a restart loop hides a repeating failure behind apparent activity.
+func TestWorkplanExecuteRefusesToRestartAgents(t *testing.T) {
+	body := skillBody(t, "nm-workplan-execute")
+
+	if !strings.Contains(body, "never restart a task's agent yourself") {
+		t.Error("nm-workplan-execute does not forbid restarting a task's agent")
+	}
+	// The lost-agent cases have to be surfaced, or the prohibition leaves a task
+	// silently stuck instead: in review, looking exactly like one awaiting a reviewer.
+	for _, want := range []string{
+		"nothing is actioning it",    // dead agent, reviewer waiting
+		"stopped without escalating", // stalled agent
+		"manual review",              // what to ask for
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("nm-workplan-execute does not surface %q", want)
+		}
+	}
+}
+
+// The orchestration skill must not tell the poller to watch for a message the
+// orchestrator no longer emits.
+//
+// It used to quote the crashed-refine-round problem verbatim. That message went with
+// the latch, and a skill watching for a string that can never appear is worse than
+// one that says nothing: it reads as coverage of a case nobody is actually watching.
+func TestWorkplanExecuteDoesNotQuoteRetiredProblems(t *testing.T) {
+	body := skillBody(t, "nm-workplan-execute")
+
+	for _, gone := range []string{"refine round started", "never finished"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("nm-workplan-execute still watches for %q, which nm no longer prints", gone)
+		}
+	}
+}
+
 // skillBody returns one embedded skill's body, lowercased for substring checks.
 func skillBody(t *testing.T, name string) string {
 	t.Helper()
