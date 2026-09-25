@@ -8,11 +8,14 @@ import (
 	"testing"
 )
 
-// The four skills the design specifies. Named here so removing one is a
+// The three skills the design specifies. Named here so removing one is a
 // deliberate edit to this list rather than a file that quietly vanished.
+//
+// There is no separate refine skill: actioning review feedback is a phase of
+// nm-task-execute, because it is the same task and the same worktree, and two
+// skills meant two escalation paths to keep in step.
 var expected = []string{
 	"nm-task-execute",
-	"nm-task-refine",
 	"nm-work-plan",
 	"nm-workplan-execute",
 }
@@ -105,6 +108,211 @@ func TestInstallIsIdempotent(t *testing.T) {
 		if r.Action != Unchanged {
 			t.Errorf("%s: %s on a second install, want unchanged", r.Name, r.Action)
 		}
+	}
+}
+
+// Nothing may be both bundled and retired. Install writes the bundle and then
+// deletes the retired ones, so an overlap would delete a skill it had just written
+// and report both actions for it — and the missing skill only surfaces later, in
+// unattended work, as a slash command that does not resolve.
+func TestNothingIsBothBundledAndRetired(t *testing.T) {
+	all, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range all {
+		if contains(Retired, s.Name) {
+			t.Errorf("%s is both embedded and listed as retired", s.Name)
+		}
+	}
+}
+
+// A retired skill has to be deleted, not merely left out of the bundle.
+//
+// This is the one that matters for nm-task-refine: a file still sitting in
+// ~/.claude/skills is still invocable, and a retired skill is retired because
+// something else covers its job now. What lingers is an older contradictory copy
+// of live instructions — two escalation paths, two answers about the ready marker.
+func TestInstallRemovesARetiredSkill(t *testing.T) {
+	dir := t.TempDir()
+	if len(Retired) == 0 {
+		t.Skip("nothing is retired, so there is nothing to check")
+	}
+	stale := filepath.Join(dir, Retired[0], File)
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("old instructions\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Install(InstallOptions{Dir: dir})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("%s survived the install (%v)", Retired[0], err)
+	}
+	var reported Result
+	for _, r := range results {
+		if r.Name == Retired[0] {
+			reported = r
+		}
+	}
+	if reported.Action != Removed {
+		t.Errorf("%s was reported as %q, want removed", Retired[0], reported.Action)
+	}
+	if !reported.OK() {
+		t.Error("a removed retired skill does not count as OK, so install would report failure")
+	}
+	// The live skills still landed: retiring one is not a reason to hold the rest.
+	for _, name := range expected {
+		if _, err := os.Stat(filepath.Join(dir, name, File)); err != nil {
+			t.Errorf("%s was not installed alongside the removal: %v", name, err)
+		}
+	}
+}
+
+// A retired skill that was never installed is not worth a line of output. Every
+// run would carry it otherwise, forever, on every fresh machine.
+func TestInstallSaysNothingAboutAnAbsentRetiredSkill(t *testing.T) {
+	dir := t.TempDir()
+
+	results, err := Install(InstallOptions{Dir: dir})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if len(results) != len(expected) {
+		t.Errorf("Install reported %d results, want %d: %+v", len(results), len(expected), results)
+	}
+	for _, r := range results {
+		if r.Action == Removed || r.Action == Kept {
+			t.Errorf("%s was reported as %q though it was never installed", r.Name, r.Action)
+		}
+	}
+}
+
+// --dry-run must report the removal and not perform it.
+func TestDryRunReportsARetiredSkillWithoutRemovingIt(t *testing.T) {
+	dir := t.TempDir()
+	if len(Retired) == 0 {
+		t.Skip("nothing is retired")
+	}
+	stale := filepath.Join(dir, Retired[0], File)
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Install(InstallOptions{Dir: dir, DryRun: true})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	if _, err := os.Stat(stale); err != nil {
+		t.Errorf("--dry-run removed %s: %v", Retired[0], err)
+	}
+	var found bool
+	for _, r := range results {
+		if r.Name == Retired[0] && r.Action == Removed {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("--dry-run did not say the retired skill would go: %+v", results)
+	}
+}
+
+// A symlinked retired skill is reported and left, and must not block the install.
+//
+// Refusing the whole run over it would be the wrong trade: the live skills are what
+// an unattended agent needs, and withholding all of them to protest one stale
+// symlink turns a small mess into a stopped workplan. So it reports Kept, the live
+// skills still land, and the command still succeeds.
+func TestASymlinkedRetiredSkillIsKeptWithoutBlockingTheInstall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink needs privilege on Windows")
+	}
+	if len(Retired) == 0 {
+		t.Skip("nothing is retired")
+	}
+	dir := t.TempDir()
+	dest := filepath.Join(dir, Retired[0], File)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "elsewhere.md")
+	if err := os.WriteFile(target, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, dest); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+
+	results, err := Install(InstallOptions{Dir: dir})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	var kept Result
+	for _, r := range results {
+		if r.Name == Retired[0] {
+			kept = r
+		}
+	}
+	if kept.Action != Kept {
+		t.Errorf("a symlinked retired skill was %q, want kept", kept.Action)
+	}
+	if kept.Reason == "" {
+		t.Error("it was kept with no reason, so nobody learns why")
+	}
+	// OK() is what callers read to decide the skill ended up in the wanted state,
+	// and a stale symlink is not that state — so Kept must not report OK.
+	if kept.OK() {
+		t.Error("a kept symlink reports OK, which hides a retired skill still in place")
+	}
+	// The link and its target survive.
+	if _, err := os.Lstat(dest); err != nil {
+		t.Errorf("the symlink was deleted: %v", err)
+	}
+	// And the live skills were still written: this is the part that must not block.
+	for _, name := range expected {
+		if _, err := os.Stat(filepath.Join(dir, name, File)); err != nil {
+			t.Errorf("%s was not installed: %v", name, err)
+		}
+	}
+}
+
+// A conflict elsewhere holds the removal too. The rule is all-or-nothing, and a
+// half-applied run is what that rule exists to prevent.
+func TestAConflictHoldsBackTheRemovalToo(t *testing.T) {
+	dir := t.TempDir()
+	if len(Retired) == 0 {
+		t.Skip("nothing is retired")
+	}
+	stale := filepath.Join(dir, Retired[0], File)
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mine := filepath.Join(dir, "nm-task-execute", File)
+	if err := os.MkdirAll(filepath.Dir(mine), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mine, []byte("my own version\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Install(InstallOptions{Dir: dir}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Errorf("the retired skill was removed while a conflict blocked the install: %v", err)
 	}
 }
 
@@ -294,7 +502,7 @@ func contains(values []string, want string) bool {
 	return false
 }
 
-// The two unattended skills must tell the agent never to stop and ask.
+// The unattended skill must tell the agent never to stop and ask.
 //
 // This is the rule that cost a whole dogfood run: an agent that asks
 // interactively is waiting on stdin nobody is attached to, so it is not reading
@@ -307,7 +515,7 @@ func TestUnattendedSkillsForbidInteractiveQuestions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unattended := map[string]bool{"nm-task-execute": true, "nm-task-refine": true}
+	unattended := map[string]bool{"nm-task-execute": true}
 
 	for _, s := range all {
 		if !unattended[s.Name] {
@@ -331,5 +539,50 @@ func TestUnattendedSkillsForbidInteractiveQuestions(t *testing.T) {
 				t.Errorf("%s still says %q, which reintroduces the interactive path", s.Name, banned)
 			}
 		}
+	}
+}
+
+// nm-task-execute has to cover the review loop, because it is now the only skill
+// that can.
+//
+// The orchestrator launches this one skill for both phases, so a body that lost
+// the refine half would leave a task in review with a reviewer's comment and an
+// agent that reads the acceptance criteria, finds them met, and stops. That
+// failure is silent from the outside: the task keeps sitting in review.
+func TestTaskExecuteCoversTheReviewLoop(t *testing.T) {
+	all, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body string
+	for _, s := range all {
+		if s.Name == "nm-task-execute" {
+			body = strings.ToLower(s.Body)
+		}
+	}
+	if body == "" {
+		t.Fatal("nm-task-execute is not embedded")
+	}
+
+	for _, want := range []struct{ what, substr string }{
+		// How feedback is read at all.
+		{"reading review comments", "tg pr comments"},
+		// The assertion rule from O6, which is the one that must not be lost.
+		{"advancing the ready marker", "ready-to-review.md"},
+		// A second pull request is what a refine round must never open. `tg pr new`
+		// fails on one, so an agent that tries it stalls on an error it cannot fix.
+		{"the no-second-PR rule", "second pull request"},
+		// One escalation path, reachable from both phases.
+		{"the escalation command", "nm workplan await-resolution"},
+	} {
+		if !strings.Contains(body, want.substr) {
+			t.Errorf("nm-task-execute says nothing about %s (no %q)", want.what, want.substr)
+		}
+	}
+
+	// The skill is started identically for both phases, so it has to work out
+	// which one it is from the task directory rather than from its prompt.
+	if !strings.Contains(body, "where you are") {
+		t.Error("nm-task-execute does not tell the agent to work out which phase it is in")
 	}
 }

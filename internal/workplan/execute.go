@@ -488,8 +488,11 @@ func (p *pass) refine(result *Result, t task.Task, id string, feedbackAt time.Ti
 		}
 	}
 
-	prompt := fmt.Sprintf("/nm-task-refine the task in %s",
-		filepath.ToSlash(filepath.Join(p.opts.Config.InputDir, t.TaskFile)))
+	// The same skill that did the work actions the feedback on it: its §1 reads the
+	// directory to tell a fresh task from one already in review, so the prompt does
+	// not have to. The agent name still says "refine", because that is what
+	// distinguishes this round in `nm agents` and in the marker below.
+	prompt := task.TaskFilePrompt(p.opts.Config, t)
 	agentID, err := p.opts.Agents.Launch(t.Dir, "nm-refine-"+t.Label(), prompt, t.Dirs())
 	if err != nil {
 		result.Problems = append(result.Problems, fmt.Sprintf("%s: starting a refine round: %v", id, err))

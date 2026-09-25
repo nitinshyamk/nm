@@ -230,11 +230,13 @@ func newSelfInstallSkillsCmd() *cobra.Command {
 		Use:   "install-skills",
 		Short: "Write the bundled workplan skills into ~/.claude/skills",
 		Long: "Installs the skills that drive nm workplan: nm-work-plan,\n" +
-			"nm-task-execute, nm-task-refine, and nm-workplan-execute.\n\n" +
+			"nm-task-execute, and nm-workplan-execute.\n\n" +
 			"They are embedded in this binary, so they always match the commands it\n" +
 			"has. A file that is already identical is left alone; one that differs is\n" +
 			"a conflict that --force replaces. A symlinked destination is refused\n" +
 			"either way, because following one writes somewhere nobody named.\n\n" +
+			"Skills nm has retired are deleted, because a leftover file stays\n" +
+			"invocable and would offer an agent withdrawn instructions.\n\n" +
 			"`mise run install` runs this, so a development build refreshes them.",
 		Args:              cobra.NoArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,
@@ -258,11 +260,16 @@ func newSelfInstallSkillsCmd() *cobra.Command {
 			if dryRun {
 				fmt.Fprintf(out, "would install into %s:\n", dir)
 			}
+			// Only a conflict or a refusal stops the run. A retired skill reported
+			// `kept` has a reason too, and it is advice rather than a blocker: the
+			// live skills were still written, so claiming nothing was would be false.
 			blocked := false
 			for _, r := range results {
 				fmt.Fprintf(out, "  %-22s %s\n", r.Name, r.Action)
 				if r.Reason != "" {
 					fmt.Fprintf(out, "  %-22s %s\n", "", r.Reason)
+				}
+				if r.Action == skills.Conflict || r.Action == skills.Refused {
 					blocked = true
 				}
 			}

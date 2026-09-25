@@ -17,7 +17,9 @@ Instructions for AI agents working in this repository.
   exists on the remote rather than cutting a new one.
 - **Workplans** — a body of work as a set of tasks under
   `~/projects/workplans/<name>/`, moving through five states. `nm workplan execute`
-  is the orchestrator: one pass, then it exits.
+  is the orchestrator: one pass, then it exits. It is also the only thing that
+  launches task agents, and it launches one skill — `nm-task-execute` — for both
+  doing the work and answering the review on it.
 
 ## Workplans
 
@@ -27,7 +29,7 @@ and `ls` answers "where is everything". Nothing is cached, which is what makes
 `execute` a reconciler: each pass reads the filesystem and GitHub from scratch, so
 an interrupted pass is repaired by running it again rather than cleaned up after.
 
-Four things here are load-bearing and easy to break by accident:
+Five things here are load-bearing and easy to break by accident:
 
 - **A background agent has no terminal, so it must never stop to ask.** An
   interactive prompt leaves it waiting on stdin, which means it is no longer reading
@@ -41,6 +43,13 @@ Four things here are load-bearing and easy to break by accident:
   throughout while the trigger stays true — so `refining.md` records it. Without
   that, a one-minute poller starts one agent per minute for the length of the round,
   all in the same worktree. See §5.5.1 of the design document.
+- **One skill does the work and the review rounds on it.** `nm-task-execute` covers
+  both, and `task.TaskFilePrompt` is the prompt for both, so the skill decides which
+  phase it is in by reading the task directory — `ready-to-review.md` plus an open
+  pull request means a reviewer is waiting. Splitting it back in two means two
+  escalation paths and two copies of the rule about not weakening the gate, which is
+  how they drift. A refine round is told apart by its session name
+  (`nm-refine-<label>`), not by its prompt.
 - **Read pull requests with `--state all`, never just open.** A merged pull request
   is how a task's life normally ends; filtering to open ones made a merged task look
   like work that was never published and stuck it in `review` forever.
@@ -51,6 +60,12 @@ The skills in `internal/skills` drive all of this and are embedded in the binary
 a test can check every command they name against the real command tree. A skill is
 read by an agent working unattended, so a command that does not exist fails in the
 middle of the work rather than at load time.
+
+**Deleting a skill means adding it to `skills.Retired`, not just removing the
+asset.** Install writes files and never swept, so a dropped skill stayed in
+`~/.claude/skills` and stayed invocable — an older copy of instructions something
+else now owns. Names stay on that list permanently; dropping one once "everyone has
+upgraded" leaves the stale file forever on the machine that had not.
 
 ## Committing — the rule
 

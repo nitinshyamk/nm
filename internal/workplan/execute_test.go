@@ -19,6 +19,7 @@ import (
 // controls, so the latch can be exercised without starting anything.
 type fakeAgents struct {
 	launched []string // prompts, in order
+	names    []string // session names, in order, parallel to launched
 	dirs     []string
 	next     int
 	live     map[string]bool
@@ -26,11 +27,12 @@ type fakeAgents struct {
 	failWith error
 }
 
-func (f *fakeAgents) Launch(dir, _, prompt string, _ []string) (string, error) {
+func (f *fakeAgents) Launch(dir, name, prompt string, _ []string) (string, error) {
 	if f.failWith != nil {
 		return "", f.failWith
 	}
 	f.launched = append(f.launched, prompt)
+	f.names = append(f.names, name)
 	f.dirs = append(f.dirs, dir)
 	f.next++
 	id := fmt.Sprintf("agent%d", f.next)
@@ -55,6 +57,22 @@ func (f *fakeAgents) count(skill string) int {
 	}
 	return n
 }
+
+// refines counts refine rounds, which is the session name and no longer the
+// prompt: one skill both does the work and actions the feedback on it, so every
+// launch names /nm-task-execute and only `nm-refine-…` says which phase it is.
+func (f *fakeAgents) refines() int {
+	n := 0
+	for _, name := range f.names {
+		if strings.HasPrefix(name, "nm-refine-") {
+			n++
+		}
+	}
+	return n
+}
+
+// starts counts launches that began a task rather than a refine round.
+func (f *fakeAgents) starts() int { return len(f.names) - f.refines() }
 
 // fakeReview answers per-branch, so a multi-repo task can have one approved pull
 // request and one not.
@@ -202,8 +220,9 @@ func TestStartsATaskWithNoPredecessors(t *testing.T) {
 	if len(result.Transitions) != 1 {
 		t.Fatalf("transitions = %v, want one", result.Transitions)
 	}
-	if h.agents.count("/nm-task-execute") != 1 {
-		t.Errorf("launched %v, want one nm-task-execute", h.agents.launched)
+	if h.agents.starts() != 1 || h.agents.count("/nm-task-execute") != 1 {
+		t.Errorf("launched %v as %v, want one nm-task-execute start",
+			h.agents.launched, h.agents.names)
 	}
 	// The task directory is a real task, discoverable like any other.
 	found := h.taskFor(t, "01-a")
@@ -285,13 +304,46 @@ func TestRefineLaunchesExactlyOneAgentAcrossManyPasses(t *testing.T) {
 		}
 	}
 
-	if got := h.agents.count("/nm-task-refine"); got != 1 {
+	if got := h.agents.refines(); got != 1 {
 		t.Fatalf("launched %d refine agents across ten passes, want exactly 1:\n%v",
-			got, h.agents.launched)
+			got, h.agents.names)
 	}
 	// And it stayed in review throughout, which is why nothing latched it.
 	if got := h.stateOf(t, "01-a"); got != Review {
 		t.Errorf("state = %s, want review", got)
+	}
+}
+
+// A refine round launches the one task skill, with the ordinary task-file prompt.
+//
+// Actioning feedback is a phase of /nm-task-execute rather than a skill of its
+// own, so there is nothing else to launch — and the prompt must not try to say
+// which phase to run, because the skill reads that off the task directory. A
+// prompt naming a skill that is no longer installed fails mid-round, unattended.
+func TestARefineRoundLaunchesTheTaskSkill(t *testing.T) {
+	h := newHarness(t, "nm")
+	h.add(t, def2("01-a", "nm"))
+	h.run(t, false)
+	published := h.now
+	h.markReady(t, "01-a", published)
+	h.run(t, false)
+	h.comment(t, "01-a", published.Add(time.Minute))
+
+	h.now = h.now.Add(time.Minute)
+	h.run(t, false)
+
+	if got := h.agents.refines(); got != 1 {
+		t.Fatalf("refine agents = %d, want 1", got)
+	}
+	// Both launches — the start and the refine round — say the same thing.
+	want := task.TaskFilePrompt(h.cfg, h.taskFor(t, "01-a"))
+	for i, prompt := range h.agents.launched {
+		if prompt != want {
+			t.Errorf("launch %d (%s) prompted %q, want %q", i, h.agents.names[i], prompt, want)
+		}
+	}
+	if strings.Contains(strings.Join(h.agents.launched, "\n"), "nm-task-refine") {
+		t.Error("a launch still names nm-task-refine, which is no longer installed")
 	}
 }
 
@@ -308,7 +360,7 @@ func TestRefineReportsACrashedRoundRatherThanRelaunching(t *testing.T) {
 
 	h.now = h.now.Add(time.Minute)
 	h.run(t, false) // starts the round
-	if got := h.agents.count("/nm-task-refine"); got != 1 {
+	if got := h.agents.refines(); got != 1 {
 		t.Fatalf("refine agents = %d, want 1", got)
 	}
 
@@ -317,7 +369,7 @@ func TestRefineReportsACrashedRoundRatherThanRelaunching(t *testing.T) {
 	h.now = h.now.Add(10 * time.Minute)
 	result := h.run(t, false)
 
-	if got := h.agents.count("/nm-task-refine"); got != 1 {
+	if got := h.agents.refines(); got != 1 {
 		t.Errorf("a dead refine round was silently relaunched (%d agents)", got)
 	}
 	if len(result.Problems) == 0 {
@@ -355,7 +407,7 @@ func TestRefineLatchClearsWhenTheRoundFinishes(t *testing.T) {
 	h.now = h.now.Add(5 * time.Minute)
 	result := h.run(t, false)
 
-	if got := h.agents.count("/nm-task-refine"); got != 1 {
+	if got := h.agents.refines(); got != 1 {
 		t.Errorf("refine agents = %d, want still 1 — the feedback is older than the new timestamp", got)
 	}
 	if len(result.Problems) != 0 {
@@ -387,7 +439,7 @@ func TestRefineRestartsWhenNewFeedbackArrivesAfterADeadRound(t *testing.T) {
 	h.now = h.now.Add(5 * time.Minute)
 	result := h.run(t, false)
 
-	if got := h.agents.count("/nm-task-refine"); got != 2 {
+	if got := h.agents.refines(); got != 2 {
 		t.Errorf("refine agents = %d, want 2: new feedback after a dead round is new work", got)
 	}
 	if len(result.Refines) != 1 {
@@ -433,7 +485,7 @@ func TestReviewToApprovedOnApproval(t *testing.T) {
 		t.Errorf("the transition does not name the pull request: %v", result.Transitions)
 	}
 	// No refine agent: approval is not feedback.
-	if got := h.agents.count("/nm-task-refine"); got != 0 {
+	if got := h.agents.refines(); got != 0 {
 		t.Errorf("an approval started %d refine agents", got)
 	}
 }
@@ -563,7 +615,7 @@ func TestRunningTwiceChangesNothingTheSecondTime(t *testing.T) {
 	if len(second.Transitions) != 0 {
 		t.Errorf("second pass repeated transitions: %v", second.Transitions)
 	}
-	if got := h.agents.count("/nm-task-execute"); got != 1 {
+	if got := h.agents.starts(); got != 1 {
 		t.Errorf("launched %d agents over two passes, want 1", got)
 	}
 }
@@ -1109,7 +1161,7 @@ func TestAMergedPullRequestDoesNotStartARefineRound(t *testing.T) {
 	h.now = h.now.Add(time.Minute)
 	h.run(t, false)
 
-	if got := h.agents.count("/nm-task-refine"); got != 0 {
+	if got := h.agents.refines(); got != 0 {
 		t.Errorf("a merged pull request started %d refine agents", got)
 	}
 }
