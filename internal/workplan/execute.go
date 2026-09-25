@@ -483,12 +483,17 @@ func (p *pass) reportRefining(result *Result, t task.Task, id string, feedbackAt
 		return
 	}
 
-	// No agent, and a reviewer is waiting. Reported rather than fixed: starting a
-	// replacement is what this change removed, and doing it here quietly would
-	// rebuild the overlap through the back door.
+	// No agent, and a reviewer is waiting. Reported for a human rather than fixed.
+	//
+	// Nothing here starts a replacement, and that is deliberate twice over: starting
+	// one is what allowed two agents in a worktree, and whatever killed the first will
+	// very likely kill the next, so an automatic restart hides a repeating failure
+	// behind apparent activity. The message says "needs review" rather than naming a
+	// remedy, because the remedy depends on why it died — which a human has to look at.
 	result.Problems = append(result.Problems, fmt.Sprintf(
 		"%s: a reviewer left feedback at %s but its agent is gone, so nothing is "+
-			"actioning it — restart the task's agent in %s, or answer the review by hand",
+			"actioning it — this needs manual review: look at %s, decide whether the work "+
+			"so far is sound, and do not let anything restart the agent automatically",
 		id, feedbackAt.Format(time.RFC3339), t.Dir))
 }
 

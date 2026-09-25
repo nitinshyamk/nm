@@ -29,7 +29,7 @@ and `ls` answers "where is everything". Nothing is cached, which is what makes
 `execute` a reconciler: each pass reads the filesystem and GitHub from scratch, so
 an interrupted pass is repaired by running it again rather than cleaned up after.
 
-Seven things here are load-bearing and easy to break by accident:
+Eight things here are load-bearing and easy to break by accident:
 
 - **A background agent has no terminal, so it must never stop to ask.** An
   interactive prompt leaves it waiting on stdin, which means it is no longer reading
@@ -58,6 +58,14 @@ Seven things here are load-bearing and easy to break by accident:
   so a pull request nobody reviews cannot pin an agent forever, and the skill is told
   to run it again. An agent that exits instead leaves a reviewer with nobody to answer
   them, which `execute` then reports as a dead agent.
+- **Nothing restarts a task's agent — a lost agent is a manual-review case.** Not
+  `execute`, and explicitly not `/nm-workplan-execute`, which is the actor with both
+  the means and the motive. A replacement can join a first agent that has not finished
+  exiting, and whatever killed the first will likely kill the next, so a restart loop
+  hides a repeating failure behind apparent activity. Both lost-agent problems are
+  surfaced for a human to look at with `claude attach`, and the orchestrator's message
+  says "needs manual review" rather than naming a remedy — the remedy depends on why it
+  died.
 - **Read pull requests with `--state all`, never just open.** A merged pull request
   is how a task's life normally ends; filtering to open ones made a merged task look
   like work that was never published and stuck it in `review` forever.

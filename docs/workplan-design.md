@@ -746,10 +746,25 @@ deliberately avoided. Two things make it affordable:
 
 **A 12-hour timeout bounds the held session**, and is a resumable outcome rather than
 a failure: the pull request is still open and still the agent's, so the skill runs the
-wait again. Only `approved` or `merged` ends the loop. The remaining exposure is an
-agent that dies with feedback unanswered — nothing replaces it, so `execute` reports
-it (`TestADeadAgentWithUnansweredFeedbackIsReported`) rather than papering over it
-with a respawn.
+wait again. Only `approved` or `merged` ends the loop.
+
+**Nothing restarts a task's agent, and that is a rule rather than an omission.** The
+remaining exposure is an agent that dies with feedback unanswered, and the tempting fix
+is for something to notice and start another. Two reasons not to:
+
+- A replacement can join a first agent that has not finished exiting, which is the
+  overlap O8 exists to remove. The old latch could not see this, because it only
+  checked for another *refine* agent.
+- Whatever killed the first will very likely kill the next, so a restart loop hides a
+  repeating failure behind apparent activity.
+
+`/nm-workplan-execute` is the actor with both the means and the motive — it reads the
+problem, it can run `claude`, and restarting looks like helpfulness — so the
+prohibition is written into that skill and pinned by
+`TestWorkplanExecuteRefusesToRestartAgents`. It surfaces the case for a human and
+waits. `execute` reports it as needing **manual review** rather than naming a remedy,
+because the right remedy depends on why the agent died
+(`TestADeadAgentWithUnansweredFeedbackIsReported`).
 
 **O7 — Are doing the work and refining it one skill or two? → One.**
 `/nm-task-refine` is folded into `/nm-task-execute` as §6.2.2, and the escalation
@@ -870,10 +885,11 @@ over from hand execution.
   the successor's base (O1).
 - *acceptance criteria*: Each transition rule is tested at its boundary —
   including one-predecessor-approved and two-predecessors-where-one-is-only-
-  approved. **A task in `review/` with actionable feedback launches exactly one
-  refine agent across ten consecutive passes**, and a pass whose marker names a
-  dead agent with an unadvanced `ready-to-review.md` escalates instead of
-  relaunching. A successor's worktree branches from its predecessor's branch.
+  approved. **A task in `review/` with actionable feedback launches nothing at all,
+  however many passes run** — superseded by O8, which replaced "exactly one refine
+  agent across ten consecutive passes" with exactly one agent for the task's whole
+  life; a task whose agent has died with feedback unanswered is reported for manual
+  review rather than replaced. A successor's worktree branches from its predecessor's branch.
   Escalation collection copies only unseen filenames. A second `execute` while one
   holds the lock exits 0 without acting. A run with no changes prints nothing.
   Without `--merge` nothing is ever merged. Running the same pass twice produces no
