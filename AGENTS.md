@@ -18,8 +18,8 @@ Instructions for AI agents working in this repository.
 - **Workplans** — a body of work as a set of tasks under
   `~/projects/workplans/<name>/`, moving through five states. `nm workplan execute`
   is the orchestrator: one pass, then it exits. It is also the only thing that
-  launches task agents, and it launches one skill — `nm-task-execute` — for both
-  doing the work and answering the review on it.
+  launches task agents, and it launches one — running `nm-task-execute` — per task,
+  which then owns that task from its definition to an approved pull request.
 
 ## Workplans
 
@@ -29,7 +29,7 @@ and `ls` answers "where is everything". Nothing is cached, which is what makes
 `execute` a reconciler: each pass reads the filesystem and GitHub from scratch, so
 an interrupted pass is repaired by running it again rather than cleaned up after.
 
-Five things here are load-bearing and easy to break by accident:
+Seven things here are load-bearing and easy to break by accident:
 
 - **A background agent has no terminal, so it must never stop to ask.** An
   interactive prompt leaves it waiting on stdin, which means it is no longer reading
@@ -38,23 +38,35 @@ Five things here are load-bearing and easy to break by accident:
   is working. Agents launch with `--permission-mode auto` for this reason;
   `bypassPermissions` has no classifier and `--dangerously-skip-permissions` is
   never used. Escalation is by file and by nothing else.
-- **The refine latch.** Every other transition is latched by the file move that
-  performs it. A refine round is the exception — the task stays in `review`
-  throughout while the trigger stays true — so `refining.md` records it. Without
-  that, a one-minute poller starts one agent per minute for the length of the round,
-  all in the same worktree. See §5.5.1 of the design document.
-- **One skill does the work and the review rounds on it.** `nm-task-execute` covers
-  both, and `task.TaskFilePrompt` is the prompt for both, so the skill decides which
-  phase it is in by reading the task directory — `ready-to-review.md` plus an open
-  pull request means a reviewer is waiting. Splitting it back in two means two
-  escalation paths and two copies of the rule about not weakening the gate, which is
-  how they drift. A refine round is told apart by its session name
-  (`nm-refine-<label>`), not by its prompt.
+- **One agent per task, for the whole of its life.** `execute` launches an agent
+  exactly once, when a task starts. That agent publishes, then blocks on
+  `nm workplan await-feedback` and answers every review round in the session that
+  built the work. **Step 3 must never launch anything** — it reports. Starting a
+  second agent on feedback is what allowed two live agents in one worktree, because
+  nothing latched the handoff: an agent that had written `ready-to-review.md` but not
+  yet exited was still there when its replacement arrived, and both committed. The
+  `refining.md` latch that guarded the old respawn is gone, because a trigger that
+  starts no process cannot re-fire.
+- **A held session is the cost, and the backoff is what makes it affordable.**
+  `await-feedback` spends a `gh` call per check, unlike `await-resolution` which stats
+  a local file. So it widens: 30s for 5m, 2m for 20m, 10m for 2h, then hourly — 54
+  calls a day per task instead of ~2900, pinned by `TestADayOfWaitingIsCheap`.
+  Statuses are cached on disk (not in memory) because the readers are separate
+  processes: a waiting agent and an orchestrator pass would otherwise both pay for
+  the same read.
+- **An `await-feedback` timeout is resumable, not a failure.** It gives up after 12h
+  so a pull request nobody reviews cannot pin an agent forever, and the skill is told
+  to run it again. An agent that exits instead leaves a reviewer with nobody to answer
+  them, which `execute` then reports as a dead agent.
 - **Read pull requests with `--state all`, never just open.** A merged pull request
   is how a task's life normally ends; filtering to open ones made a merged task look
   like work that was never published and stuck it in `review` forever.
 - **`--merge` gates nm performing a merge, not noticing one.** A pull request merged
   by hand still completes its task without the flag.
+- **An agent's pull request comments are prefixed `nm-agent:`.** A reviewer weighs an
+  unattended agent's "this looks fine" differently from a colleague's, and a thread
+  with both in it is unreadable if nobody can tell them apart. Commit messages are
+  not prefixed — those follow the repository's own convention.
 
 The skills in `internal/skills` drive all of this and are embedded in the binary so
 a test can check every command they name against the real command tree. A skill is

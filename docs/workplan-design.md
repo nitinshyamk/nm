@@ -297,7 +297,17 @@ exclusive `.lock` file (create-exclusive, PID + start time inside); a second run
 exits 0 with `another execute is running (pid N)`. A lock older than 30 minutes
 is stale and broken. This is the minimum needed to make a 1-minute cron safe.
 
-### 5.5.1 The refine latch — why Step 3 needs one and Step 5 does not
+### 5.5.1 The refine latch — superseded by O8
+
+**This section is kept for the reasoning, not the design.** The latch it describes is
+gone: Step 3 no longer launches anything, so there is no round to latch. A task keeps
+the agent that started it and answers review in that session (O8, §5.5.3).
+
+The analysis below is still the right analysis of the *respawn* model, and it is worth
+keeping because it is what led to O8. Note what it does not catch: it guards against
+two *refine* agents, and says nothing about a refine agent joining the original one,
+which is the overlap that actually happened.
+
 
 Every other transition is latched by the file move itself. Step 3's refine round
 is the one exception, and without a latch a 1-minute poller starts an unbounded
@@ -397,6 +407,48 @@ design was factored right, and it passes.
 Liveness needs no new machinery: `agent.Client.List` and `matchSession`
 (`internal/cli/task_view.go`) already resolve a recorded agent id to a live
 session, falling back to matching by working directory. Reuse both.
+
+### 5.5.3 L4 — waiting for a reviewer, and what makes it affordable
+
+O8 adds a fourth loop, and it is the expensive one. An agent that owns its task
+through review has to wait for a human who may take days, and the only source for
+"has a reviewer acted" is GitHub — so unlike L2, which stats a local file for free,
+every check spends an API call.
+
+`nm workplan await-feedback` is the surface, for the same reason L2 has one: the
+waiting belongs in a blocked process, not in the model loop, where each wakeup reloads
+a whole conversation. Three things keep the cost down.
+
+**A widening interval.** Shaped to how review actually arrives rather than to a single
+number:
+
+| Elapsed | Checks every | Why |
+|---|---|---|
+| 0–5m | 30s | a reviewer who just commented is likely mid-thought |
+| 5–25m | 2m | still in the same sitting |
+| 25m–2h25m | 10m | they have moved on but may come back today |
+| beyond | 1h | this is waiting on someone's next working day |
+
+54 calls a day per task instead of ~2900 flat, and the total is pinned by
+`TestADayOfWaitingIsCheap` so a later edit to the table fails a test rather than
+someone's rate limit.
+
+**A short on-disk cache** (`StatusTTL`, 25s). The readers are separate processes — one
+blocked agent per task, plus a one-minute orchestrator pass — so an in-memory cache
+cannot help them. The TTL is deliberately just under the tightest poll interval, so it
+only ever spares a *different* reader a call and never serves one agent its own stale
+answer; `TestStatusTTLIsShorterThanTheTightestPoll` holds those two numbers together.
+
+**A 12-hour cap**, so an unreviewed pull request cannot pin an agent indefinitely. The
+timeout is a resumable outcome, not a failure: the skill runs the wait again, which
+keeps the session rather than handing the task to a replacement.
+
+| Loop | Waits on | Verdict |
+|---|---|---|
+| L1 — `execute` every 1 min | GitHub review state | stays polled (§5.5.2) |
+| L2 — escalation resolution | a local file | blocking, free |
+| L3 — refine launch | — | **gone**: Step 3 launches nothing (O8) |
+| L4 — review feedback | GitHub review state | blocking, with backoff and cache |
 
 ### 5.6 `nm workplan resolve <name>`
 
@@ -654,9 +706,55 @@ non-actionable gets no signal beyond the absence of a change. Recording dismisse
 comment ids (`tg pr comments` exposes stable ids) fixes it later without changing
 this contract.
 
+**O8 — Does one agent own a task, or one per phase? → One agent, for the whole
+life of the task.** This supersedes the respawn model O7 left in place, and deletes
+the §5.5.1 latch along with it.
+
+O7 merged the *instructions* and left the *process model* alone: the orchestrator
+still launched a fresh agent for each review round, and §6.2's opening table existed
+only so that replacement could work out where it had landed. That is the tell — a
+phase table is a symptom of losing the session, not a feature.
+
+Worse, the handoff was unguarded. The latch checked whether a *refine* agent was
+running; nothing checked whether the *original* agent still was. An agent that had
+written `ready-to-review.md` but not yet exited was live in the same worktree as its
+replacement, both committing. `TestOneAgentPerTaskAcrossItsWholeLife` reproduces the
+old behaviour and now forbids it.
+
+**The fix is that the agent stops exiting.** It publishes, then blocks on
+`nm workplan await-feedback` and answers every round in the session that built the
+work — so it already knows what it built, what it decided, and what the reviewer
+asked last time. Step 3 of the state machine reports instead of launching.
+
+| Option | Cost | |
+|---|---|---|
+| **One agent, blocked on `await-feedback` between rounds** | Holds a session across review latency; polls GitHub per waiting task | **chosen** |
+| Respawn per round, plus a liveness guard on the original agent | One agent at a time, but never one agent: context re-derived from disk every round, and the phase table stays | |
+| Respawn, unguarded, as O7 shipped it | Two live agents in one worktree | |
+
+**What this costs, stated plainly.** A held session is the price of continuity, and
+the orchestrator's single `gh` poller becomes one per waiting task — which §5.5.2 L1
+deliberately avoided. Two things make it affordable:
+
+- **A widening backoff** (§5.5.3): 30s for 5m, then 2m for 20m, then 10m for 2h, then
+  hourly. A reviewer who just looked is likely to say more within minutes; one who has
+  been quiet for hours is on another day. 54 calls a day per task rather than ~2900,
+  pinned by `TestADayOfWaitingIsCheap`.
+- **A short on-disk status cache**, so a waiting agent and an orchestrator pass do not
+  both pay for the same read. On disk rather than in memory because they are separate
+  processes, which is the whole problem.
+
+**A 12-hour timeout bounds the held session**, and is a resumable outcome rather than
+a failure: the pull request is still open and still the agent's, so the skill runs the
+wait again. Only `approved` or `merged` ends the loop. The remaining exposure is an
+agent that dies with feedback unanswered — nothing replaces it, so `execute` reports
+it (`TestADeadAgentWithUnansweredFeedbackIsReported`) rather than papering over it
+with a respawn.
+
 **O7 — Are doing the work and refining it one skill or two? → One.**
 `/nm-task-refine` is folded into `/nm-task-execute` as §6.2.2, and the escalation
-mechanism both phases used is lifted out into one §6.2.3. The options weighed:
+mechanism both phases used is lifted out into one §6.2.3. Superseded in part by O8,
+which keeps the merged skill and replaces the respawn it assumed. The options weighed:
 
 | Option | Cost | |
 |---|---|---|

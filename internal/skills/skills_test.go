@@ -586,3 +586,63 @@ func TestTaskExecuteCoversTheReviewLoop(t *testing.T) {
 		t.Error("nm-task-execute does not tell the agent to work out which phase it is in")
 	}
 }
+
+// The skill must tell the agent to wait for review rather than exit, because it is
+// the only agent the task gets.
+//
+// This is the whole of the one-agent design as the agent experiences it. Nothing
+// starts a replacement, so a skill that lost these lines would leave every task
+// sitting in review with a reviewer's comment and nobody reading it — and the
+// orchestrator would report that as a dead agent rather than fixing it.
+func TestTaskExecuteWaitsForReviewRatherThanExiting(t *testing.T) {
+	body := skillBody(t, "nm-task-execute")
+
+	for _, want := range []struct{ what, substr string }{
+		// The blocking command, which is what makes staying alive affordable.
+		{"the feedback wait", "nm workplan await-feedback"},
+		// It must not exit when the wait times out; that is a resumable outcome.
+		{"resuming after a timeout", "run it again"},
+		// Polling in the model loop is the thing await-feedback exists to replace.
+		{"not polling itself", "do not poll for feedback"},
+		// The terminal verdicts, so the agent knows when it may stop.
+		{"the approved verdict", "approved"},
+		{"the merged verdict", "merged"},
+	} {
+		if !strings.Contains(body, want.substr) {
+			t.Errorf("nm-task-execute says nothing about %s (no %q)", want.what, want.substr)
+		}
+	}
+}
+
+// Every pull request comment the agent leaves has to be attributable to an agent.
+//
+// A reviewer reads an unprefixed reply as a colleague's and may weigh it very
+// differently from an unattended agent's, and a thread with both in it is unreadable
+// if nobody can tell them apart.
+func TestTaskExecutePrefixesItsPullRequestComments(t *testing.T) {
+	body := skillBody(t, "nm-task-execute")
+
+	if !strings.Contains(body, "nm-agent:") {
+		t.Error("nm-task-execute does not require the nm-agent: prefix on its comments")
+	}
+	// Named as a rule, not only shown in an example a skimming agent may skip.
+	if !strings.Contains(body, "without the `nm-agent:` prefix") {
+		t.Error("the nm-agent: prefix is not stated as a rule in the Never list")
+	}
+}
+
+// skillBody returns one embedded skill's body, lowercased for substring checks.
+func skillBody(t *testing.T, name string) string {
+	t.Helper()
+	all, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range all {
+		if s.Name == name {
+			return strings.ToLower(s.Body)
+		}
+	}
+	t.Fatalf("%s is not embedded", name)
+	return ""
+}

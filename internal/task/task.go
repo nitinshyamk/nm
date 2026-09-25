@@ -357,6 +357,35 @@ func (t Task) SavePrompt(cfg config.Config) error {
 	return nil
 }
 
+// Current finds the task whose directory contains the working directory.
+//
+// An agent runs inside its worktree, one level below the task directory, so this
+// walks up until it finds the record rather than requiring the task be named. The
+// walk stops at the filesystem root and reports what it was looking for, because
+// "no task here" is the normal answer when a command is run from the wrong place and
+// a bare failure would read as a broken command.
+//
+// Paths are compared by walking rather than by prefix-matching the tasks root: a
+// path from a shell and a path built by Go disagree about separators and short
+// names, and a bare string comparison on those has been a bug every time.
+func Current(cfg config.Config) (Task, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return Task{}, err
+	}
+	for {
+		if found, err := Load(dir); err == nil {
+			return found, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return Task{}, fmt.Errorf("no %s in this directory or any above it, "+
+				"so this is not a task directory", MetaFile)
+		}
+		dir = parent
+	}
+}
+
 // Load reads the task record from a task directory.
 func Load(dir string) (Task, error) {
 	path := filepath.Join(dir, MetaFile)
