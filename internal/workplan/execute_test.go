@@ -215,17 +215,19 @@ func TestStartsATaskWithNoPredecessors(t *testing.T) {
 	}
 }
 
-// The eligibility rule, at its boundaries. One predecessor starts on approved;
-// two or more wait for all of them to complete.
+// The eligibility rule, at its boundaries. One predecessor starts once it reaches
+// review; two or more wait for all of them to complete.
 func TestEligibilityBoundaries(t *testing.T) {
 	cases := map[string]struct {
 		predStates map[string]State
 		preds      []string
 		wantStart  bool
 	}{
-		"no predecessors":              {preds: nil, wantStart: true},
-		"one, still in progress":       {preds: []string{"01-a"}, predStates: map[string]State{"01-a": InProgress}, wantStart: false},
-		"one, in review":               {preds: []string{"01-a"}, predStates: map[string]State{"01-a": Review}, wantStart: false},
+		"no predecessors":        {preds: nil, wantStart: true},
+		"one, still in progress": {preds: []string{"01-a"}, predStates: map[string]State{"01-a": InProgress}, wantStart: false},
+		// Review is the relaxed gate: the predecessor's branch exists, so a
+		// successor can stack on it without waiting for a human.
+		"one, in review":               {preds: []string{"01-a"}, predStates: map[string]State{"01-a": Review}, wantStart: true},
 		"one, approved":                {preds: []string{"01-a"}, predStates: map[string]State{"01-a": Approved}, wantStart: true},
 		"one, completed":               {preds: []string{"01-a"}, predStates: map[string]State{"01-a": Completed}, wantStart: true},
 		"two, both approved":           {preds: []string{"01-a", "02-b"}, predStates: map[string]State{"01-a": Approved, "02-b": Approved}, wantStart: false},
@@ -1134,5 +1136,84 @@ func TestAPartiallyMergedTaskDoesNotComplete(t *testing.T) {
 	h.run(t, false)
 	if got := h.stateOf(t, "01-a"); got == Completed {
 		t.Error("a task with one of two repositories merged was completed")
+	}
+}
+
+// A successor starts once its predecessor reaches review, and stacks on that
+// predecessor's branch rather than on main.
+//
+// Review rather than approved is a deliberate relaxation: review latency is the
+// largest delay in the pipeline, and the work a successor builds on exists the
+// moment the predecessor's branch does. The stacking is what makes it safe — this
+// asserts the worktree really contains the predecessor's commit, because branching
+// from main would silently lose it and still look like a successful start.
+func TestSuccessorStartsAtReviewAndStacksOnIt(t *testing.T) {
+	h := newHarness(t, "nm")
+	h.add(t, def2("01-a", "nm"))
+	h.add(t, Task{
+		ID: "02-b", Predecessors: []string{"01-a"}, Repositories: []string{"nm"},
+		Description: "After a.", AcceptanceCriteria: []string{"Done."},
+	})
+	h.run(t, false) // starts 01-a
+
+	// 01-a commits work and says it is ready. Nobody has reviewed it.
+	first := h.taskFor(t, "01-a")
+	if err := os.WriteFile(filepath.Join(first.Repos[0].Dir, "from-01a.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, first.Repos[0].Dir, "add", "-A")
+	gitIn(t, first.Repos[0].Dir, "commit", "-m", "01-a work")
+	head := gitIn(t, first.Repos[0].Dir, "rev-parse", "HEAD")
+	h.markReady(t, "01-a", h.now)
+
+	// One pass: 01-a reaches review, and 02-b starts in the same pass.
+	h.run(t, false)
+
+	if got := h.stateOf(t, "01-a"); got != Review {
+		t.Fatalf("01-a state = %s, want review", got)
+	}
+	if got := h.stateOf(t, "02-b"); got != InProgress {
+		t.Fatalf("02-b state = %s, want in-progress once 01-a reached review", got)
+	}
+
+	second := h.taskFor(t, "02-b")
+	if got := second.Repos[0].BaseCommit; got != head {
+		t.Errorf("02-b branched from %q, want the predecessor's head %q", got, head)
+	}
+	if got := second.Repos[0].BaseBranch; got != first.Repos[0].Branch {
+		t.Errorf("BaseBranch = %q, want the predecessor's branch %q", got, first.Repos[0].Branch)
+	}
+	// The assertion that matters: the work is actually there.
+	if _, err := os.Stat(filepath.Join(second.Repos[0].Dir, "from-01a.txt")); err != nil {
+		t.Errorf("02-b does not contain 01-a's work, so it branched from the wrong base: %v", err)
+	}
+}
+
+// eligible and stackBase are one decision in two places. Every state eligible
+// accepts for a single predecessor must be one stackBase knows how to branch from,
+// or a successor starts from main and silently loses the work it was scoped to
+// build on — which looks like a successful start, not a failure.
+func TestEligibleAndStackBaseAgree(t *testing.T) {
+	successor := Task{
+		ID: "02-b", Predecessors: []string{"01-a"}, Repositories: []string{"nm"},
+		Description: "d", AcceptanceCriteria: []string{"c"},
+	}
+
+	for _, state := range States() {
+		p := &pass{state: map[string]State{"01-a": state}}
+		starts, _ := p.eligible(successor)
+		if !starts {
+			continue
+		}
+		// It starts from this state, so stacking must have an answer: either a
+		// base to branch from, or Completed, where main already has the work.
+		if state == Completed {
+			continue
+		}
+		if _, ok := stackableStates()[state]; !ok {
+			t.Errorf("eligible starts a successor when its predecessor is %s, but stackBase "+
+				"does not stack on that state — the successor would branch from main and lose "+
+				"the work it builds on", state)
+		}
 	}
 }
