@@ -26,12 +26,19 @@ const ReadyFile = "ready-to-review.md"
 // which is why the latch has to be written down.
 const RefiningFile = "refining.md"
 
-// TaskFilePrompt is what an agent working from a task definition is told.
+// TaskFilePrompt is what an agent working from a task definition is told, whether
+// it is starting the task or actioning review feedback on it.
 //
 // It is deliberately one line. The definition already says what the work is, the
 // acceptance criteria already say when it is done, and the skill already knows
 // the procedure; restating any of that here would give the agent two sources for
 // the same thing and no way to tell which is current.
+//
+// One prompt covers both cases because the skill works out which it is from the
+// task directory — `ready-to-review.md` and an open pull request mean the work is
+// published and a reviewer is waiting. Telling it which phase to run would be a
+// second source for something the filesystem already answers, and the orchestrator
+// is a reconciler precisely so that it does not have to remember.
 func TaskFilePrompt(cfg config.Config, t Task) string {
 	return fmt.Sprintf("/nm-task-execute the task in %s",
 		filepath.ToSlash(filepath.Join(cfg.InputDir, t.TaskFile)))

@@ -57,6 +57,20 @@ func All() ([]Skill, error) {
 
 func path(name string) string { return Root + "/" + name + "/" + File }
 
+// Retired names skills nm used to install and no longer does.
+//
+// Install has to delete these rather than merely stop writing them. A skill left
+// behind in ~/.claude/skills stays invocable, and a retired one is retired because
+// something else now covers its job — so what lingers is an older, contradictory
+// copy of live instructions, which is worse than no skill at all. nm-task-refine
+// went when its content became a phase of nm-task-execute (design O7), and an
+// agent reading both would find two escalation paths and two answers about when to
+// advance ready-to-review.md.
+//
+// A name stays on this list. Dropping it once "everyone has upgraded" is how the
+// one machine that did not keeps the stale file forever.
+var Retired = []string{"nm-task-refine"}
+
 // Action is what installing one skill did.
 type Action string
 
@@ -67,6 +81,8 @@ const (
 	Replaced  Action = "replaced"  // overwritten under --force
 	Conflict  Action = "conflict"  // present and different, left alone
 	Refused   Action = "refused"   // a symlink, or otherwise not safe to write
+	Removed   Action = "removed"   // retired, and deleted from the skills directory
+	Kept      Action = "kept"      // retired, but not safe to delete; needs a human
 )
 
 // Result is one skill's installation outcome.
@@ -78,8 +94,11 @@ type Result struct {
 }
 
 // OK reports whether the skill ended up installed and current.
+//
+// Removed counts: a retired skill that is gone is the state the caller wanted.
 func (r Result) OK() bool {
-	return r.Action == Installed || r.Action == Unchanged || r.Action == Replaced
+	return r.Action == Installed || r.Action == Unchanged ||
+		r.Action == Replaced || r.Action == Removed
 }
 
 // InstallOptions controls an install run.
@@ -92,10 +111,11 @@ type InstallOptions struct {
 	DryRun bool
 }
 
-// Install writes every embedded skill into the skills directory.
+// Install writes every embedded skill into the skills directory, and deletes any
+// skill nm has retired.
 //
-// The whole run is checked before anything is written, so a conflict in the fourth
-// skill does not leave the first three installed and the set half-updated. A
+// The whole run is checked before anything is written, so a conflict in the third
+// skill does not leave the first two installed and the set half-updated. A
 // symlinked destination is refused even with --force: following one would write
 // through to wherever it points, which is not a place the caller named.
 func Install(opts InstallOptions) ([]Result, error) {
@@ -104,7 +124,10 @@ func Install(opts InstallOptions) ([]Result, error) {
 		return nil, err
 	}
 
-	results := make([]Result, 0, len(all))
+	// live stays index-parallel with all, because the write loop below pairs them.
+	// The retired ones are a separate slice for that reason, and every return joins
+	// the two so a caller always sees the whole picture.
+	live := make([]Result, 0, len(all))
 	blocked := false
 	for _, s := range all {
 		dest := filepath.Join(opts.Dir, s.Name, File)
@@ -124,27 +147,81 @@ func Install(opts InstallOptions) ([]Result, error) {
 		default:
 			result.Action = Installed
 		}
-		results = append(results, result)
+		live = append(live, result)
 	}
+
+	retired := inspectRetired(opts.Dir)
+	report := func() []Result { return append(live, retired...) }
 
 	if blocked || opts.DryRun {
-		return results, nil
+		return report(), nil
 	}
 
-	for i := range results {
+	for i := range live {
 		s := all[i]
-		if results[i].Action == Unchanged {
+		if live[i].Action == Unchanged {
 			continue
 		}
-		dir := filepath.Dir(results[i].Path)
+		dir := filepath.Dir(live[i].Path)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return results, fmt.Errorf("creating %s: %w", dir, err)
+			return report(), fmt.Errorf("creating %s: %w", dir, err)
 		}
-		if err := os.WriteFile(results[i].Path, []byte(s.Body), 0o644); err != nil {
-			return results, fmt.Errorf("writing %s: %w", results[i].Path, err)
+		if err := os.WriteFile(live[i].Path, []byte(s.Body), 0o644); err != nil {
+			return report(), fmt.Errorf("writing %s: %w", live[i].Path, err)
 		}
 	}
-	return results, nil
+
+	for _, r := range retired {
+		if r.Action != Removed {
+			continue
+		}
+		if err := os.Remove(r.Path); err != nil && !os.IsNotExist(err) {
+			return report(), fmt.Errorf("removing %s: %w", r.Path, err)
+		}
+		// And the directory it sat in, if nothing else is in it. A non-empty one
+		// fails here and is left alone, which is the wanted behaviour: whatever else
+		// the user keeps in there is theirs.
+		_ = os.Remove(filepath.Dir(r.Path))
+	}
+	return report(), nil
+}
+
+// inspectRetired reports what should happen to each retired skill still on disk.
+//
+// A retired skill that is absent is reported as nothing at all: the normal state
+// on a fresh machine is that it was never installed, and listing it every run
+// would make `install-skills` noisier forever for no reason.
+//
+// A retired skill is deleted whether or not the user edited it, and `--force` does
+// not gate that. The conflict rule exists to protect an edit to a skill that is
+// still live — an edit to a retired one is an edit to instructions nothing should
+// follow any more, and keeping it is the outcome being prevented.
+//
+// A symlink is the exception and is reported as Kept: deleting the link itself
+// would be safe, but the user pointed it somewhere deliberately, so this says so
+// and leaves it. Kept rather than Refused because it must not block the install —
+// the live skills are what an unattended agent needs, and holding all of them back
+// over one stale symlink would trade a small problem for a larger one.
+func inspectRetired(dir string) []Result {
+	var out []Result
+	for _, name := range Retired {
+		dest := filepath.Join(dir, name, File)
+		info, err := os.Lstat(dest)
+		switch {
+		case os.IsNotExist(err):
+			continue
+		case err != nil:
+			out = append(out, Result{Name: name, Path: dest, Action: Kept, Reason: err.Error()})
+		case info.Mode()&os.ModeSymlink != 0:
+			out = append(out, Result{
+				Name: name, Path: dest, Action: Kept,
+				Reason: "it is a symlink to a retired skill; delete it by hand",
+			})
+		default:
+			out = append(out, Result{Name: name, Path: dest, Action: Removed})
+		}
+	}
+	return out
 }
 
 // inspect reports what is already at a destination.

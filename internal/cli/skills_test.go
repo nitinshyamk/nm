@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -68,6 +70,52 @@ func subCommandNamed(parent *cobra.Command, name string) *cobra.Command {
 		}
 	}
 	return nil
+}
+
+// install-skills must succeed while also sweeping a retired skill away.
+//
+// This covers the path `mise run install` takes on an existing machine: the
+// bundled skills land and the withdrawn one goes, in one run that exits 0. The
+// `kept` case — a retired skill that cannot be removed, which is the one carrying a
+// Reason and so the one the command's blocked rule has to classify — needs a
+// symlink and is tested in internal/skills, where it can be skipped per platform.
+func TestInstallSkillsSweepsARetiredSkillAndStillSucceeds(t *testing.T) {
+	if len(skills.Retired) == 0 {
+		t.Skip("nothing is retired, so there is nothing to sweep")
+	}
+	dir := t.TempDir()
+	stale := filepath.Join(dir, skills.Retired[0], skills.File)
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("withdrawn instructions\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := newRootCmd()
+	var out strings.Builder
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"self", "install-skills", "--dir", dir})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("install-skills failed on a sweep: %v\n%s", err, out.String())
+	}
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("%s survived: %v", skills.Retired[0], err)
+	}
+	if !strings.Contains(out.String(), "installed into") {
+		t.Errorf("the run did not report success:\n%s", out.String())
+	}
+	all, err := skills.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range all {
+		if _, err := os.Stat(filepath.Join(dir, s.Name, skills.File)); err != nil {
+			t.Errorf("%s was not installed: %v", s.Name, err)
+		}
+	}
 }
 
 // The flags the skills name have to exist too: a skill telling an agent to pass

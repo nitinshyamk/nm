@@ -14,12 +14,12 @@ The first real use of the feature is the *next* feature.
 **What this delivers.** A workplan is a directory of task definitions moving
 through five states, plus the machinery to drive them: six new `nm` commands
 (`workplan define | add | verify | execute | resolve | await-resolution`), one
-extension to task creation (`--artifacts`, `--taskfile`), and four skills
-(`/nm-work-plan`, `/nm-task-execute`, `/nm-task-refine`,
-`/nm-workplan-execute`). The orchestrator is a stateless reconciler: every
-invocation reads the filesystem and GitHub, makes whatever transitions the rules
-allow, and prints what changed. State lives in directory membership, not in a
-database.
+extension to task creation (`--artifacts`, `--taskfile`), and three skills
+(`/nm-work-plan`, `/nm-task-execute`, `/nm-workplan-execute` — the refine round is
+a phase of `/nm-task-execute`, per O7). The orchestrator is a stateless
+reconciler: every invocation reads the filesystem and GitHub, makes whatever
+transitions the rules allow, and prints what changed. State lives in directory
+membership, not in a database.
 
 **The one structural claim worth arguing about.** Directory membership *is* the
 state. A task in `review/` is in review because the file sits there. This keeps
@@ -40,7 +40,7 @@ handles this with a lock file.
 | D4 | `nm workplan execute` (the state machine) | `internal/workplan` |
 | D5 | `nm workplan resolve` + `await-resolution` (§5.5.2 L2) | `internal/workplan` |
 | D6 | GitHub reads the orchestrator needs (reviews, comments, merge) | extends `internal/forge` |
-| D7 | Four skills, embedded in the binary + an install command | `internal/skills` |
+| D7 | Three skills, embedded in the binary + an install command | `internal/skills` |
 
 Out of scope: any change to `nm worktree`, `nm task rebase`, or the task TUI
 beyond what D3 requires.
@@ -103,8 +103,9 @@ reachable through `internal/forge`:
 | Mergeability | `gh pr view --json mergeable,mergeStateStatus` | `MERGEABLE` / `BLOCKED` |
 
 So: **`gh` (via `internal/forge`) is the orchestrator's read surface; `tg pr
-comments` stays the reading surface for `/nm-task-refine`**, where a human-shaped
-rendering of threads is exactly what the agent wants and timestamps don't matter.
+comments` stays the reading surface for the refine loop (§6.2.2)**, where a
+human-shaped rendering of threads is exactly what the agent wants and timestamps
+don't matter.
 Confirmed against a live PR: `reviewDecision: "APPROVED"` with
 `reviews[].submittedAt` and `comments[].createdAt` all populated.
 
@@ -310,7 +311,7 @@ starting a second agent. Two guards, no extra bookkeeping.
 
 **Step 3 can, and does.** The task file stays in `review/` throughout a refine
 round, so nothing latches. The trigger is "a comment newer than
-`ready-to-review.md`", and `/nm-task-refine` only advances that timestamp when it
+`ready-to-review.md`", and the refine loop only advances that timestamp when it
 *finishes* — so the trigger stays true for the entire run. One poll per minute
 against a 20-minute refine starts roughly 20 agents in one worktree, each
 committing over the others.
@@ -325,7 +326,7 @@ the launch timestamp and the agent id. Step 3 consults it before launching:
 
 | Marker | Agent liveness | Step 3 does |
 |---|---|---|
-| absent | — | launch `/nm-task-refine`, write the marker |
+| absent | — | launch `/nm-task-execute` as `nm-refine-<label>`, write the marker |
 | present | agent is live | nothing — this is the latch |
 | present | agent gone, `ready-to-review.md` advanced | delete the marker; the round finished |
 | present | agent gone, `ready-to-review.md` unchanged | escalate a crashed refine; do **not** relaunch silently |
@@ -419,9 +420,18 @@ loop, deliberately not fsnotify (§5.5.2).
 
 ## 6. Skills
 
-All four are embedded in the binary and written to `~/.claude/skills/<name>/SKILL.md`
+All three are embedded in the binary and written to `~/.claude/skills/<name>/SKILL.md`
 by `nm self install-skills` (folded into `mise run install`, so a dev build
 refreshes them).
+
+Install also **deletes** the skills nm has retired, listed in `skills.Retired`.
+Writing the current set is not enough: a skill file left in `~/.claude/skills` stays
+invocable, so a retired one is a stale copy of instructions that something else now
+owns — `nm-task-refine` beside the `/nm-task-execute` that absorbed it would offer
+an agent two escalation paths and two answers about the ready marker. A retired
+skill is removed whether or not the user edited it, because an edit to withdrawn
+instructions is not worth preserving; a symlink is reported and kept, and does not
+hold back the rest of the install.
 
 ### 6.1 `/nm-work-plan` — design → workplan
 
@@ -437,50 +447,68 @@ refreshes them).
    predecessor naming a task that was renamed. After 2–3 failed attempts on the
    same error, stop and escalate to the author rather than looping.
 
-### 6.2 `/nm-task-execute <taskfile>` — do the work
+### 6.2 `/nm-task-execute <taskfile>` — do the work, then see it through review
+
+This skill owns a task from its definition to an approved pull request. Doing the
+work (§6.2.1) and answering the review on it (§6.2.2) are two phases of it, not two
+skills, and Step 3 launches this same skill with this same prompt for both.
+
+**Why one skill (O7).** The two phases share the task, the worktree, the gate, and
+the escalation path, and they disagree about none of it. Split across two skills
+each of those was written twice, so the copies could drift — and the pair that
+matters most is "never weaken a test to get a green gate" beside "the reviewer is
+the authority on what they want", which is exactly where a refine agent is tempted.
+One escalation path is the concrete win: §6.2.3 is reached identically from a failed
+acceptance criterion and from an unintelligible review comment, so there is one
+format, one `await-resolution` call, and one rule about the ready marker.
+
+**The phase is read from the task directory, not from the prompt.** Both launches
+use `task.TaskFilePrompt`, so the skill first decides where it is: no
+`ready-to-review.md` and no pull request means the work is unpublished (§6.2.1);
+`ready-to-review.md` plus an open pull request means a reviewer is waiting
+(§6.2.2); an unactioned `<timestamp>-resolution.md` means a question of its own was
+answered, and it rejoins whichever phase it asked from. The orchestrator is a
+reconciler, so this keeps the one source of truth the filesystem already is —
+telling the agent its phase would be a second one, wrong whenever a round crashed
+between the two.
+
+#### 6.2.1 Do the work and publish it
 
 1. Read everything in `artifacts/` first: it is the design context the task was
    scoped against.
 2. Read the taskfile. Treat the schema as an interpretation aid — `description`
    is the intent, `acceptance-criteria` is the definition of done.
-3. Work until every acceptance criterion is met.
-4. **Escalate** after **three** failed attempts at the same criterion — not a
-   vague "repeatedly", which an agent will read as license to keep going. Write
-   `escalations/<timestamp>.md` (`YYYY-MM-DD-HH-MM-SS`, local) describing what was
-   tried, what the blocker is, and what decision is needed — *and* surface it
-   through the normal approval path so a human watching the session sees it. Then
-   **block** on the resolution rather than polling for it (§5.5.2 L2):
-
-   ```
-   nm workplan await-resolution escalations/<timestamp>.md --timeout 60m
-   ```
-
-   Run it as a backgrounded command and let the harness notify you when it exits:
-   exit 0 means the resolution file appeared and is ready to read, exit 1 means the
-   timeout elapsed. Do not re-check the file on a timer in between — that is the
-   thing this command exists to replace.
-
-   On timeout, stop with the escalation left open. It is already in the workplan,
-   and `nm workplan resolve` lands the answer whenever it arrives, so nothing is
-   lost by exiting; a fresh `/nm-task-refine` or `/nm-task-execute` picks it up.
-5. **Finish**: `mise run pre-commit` (or the repo's own gate, discovered from
+3. Work until every acceptance criterion is met. **Escalate** (§6.2.3) after
+   **three** failed attempts at the same criterion — not a vague "repeatedly",
+   which an agent will read as license to keep going.
+4. **Publish**: `mise run pre-commit` (or the repo's own gate, discovered from
    AGENTS.md / CLAUDE.md / mise.toml / Makefile / package.json) → `tg commit new`
-   → `tg pr new` → confirm checks pass → write `escalations/ready-to-review.md`
-   containing the timestamp → file a "ready for review" escalation. Then stop.
+   → confirm the tree is clean → `tg pr new` (with `--base <predecessor-branch>`
+   when stacked, per O1) → confirm checks pass.
+5. **Say it is ready**: write `escalations/ready-to-review.md` containing the
+   timestamp, then file a "ready for review" escalation naming the pull request.
+   Then stop — the task is in `review/`, and §6.2.2 is how it leaves.
 
 Never weaken a test or lint rule to get a green gate — the existing convention in
 `AGENTS.md` and the rebase prompt, restated here because this agent runs
-unattended.
+unattended. A gate that cannot pass without undoing the task is an escalation.
 
-### 6.3 `/nm-task-refine` — action review feedback
+#### 6.2.2 The review loop
 
-1. Find the PR for the current branch, run `tg pr comments <n>`.
-2. Address every comment that needs action.
-3. Where a thread's resolution is genuinely unclear, escalate it with the §6.2
-   mechanism rather than guessing.
-4. Re-run the gate, push, then rewrite `ready-to-review.md` with a **newer**
-   timestamp. That single write is what tells the orchestrator the round trip is
-   done: Step 3's "newer than `ready-to-review`" comparison goes quiet.
+One pass of this runs per batch of feedback; Step 3 starts the next pass if the
+reviewer says something else. The reviewer is the authority on what they want, not
+a source to weigh against the agent's own reading of the code.
+
+1. Find the PR for the current branch, run `tg pr comments <n>`. Read every thread
+   to its end — a thread often resolves itself two replies down.
+2. Address every comment that needs action. A comment needing no code change is
+   dealt with by deciding so; one whose ask is unclear goes to §6.2.3.
+3. Re-run the gate, commit, and push — §6.2.1 step 4 **without** `tg pr new`. The
+   review lives on the pull request that already exists, and opening a second one
+   would fail anyway (O3).
+4. Rewrite `ready-to-review.md` with a **newer** timestamp. That single write is
+   what tells the orchestrator the round trip is done: Step 3's "newer than
+   `ready-to-review`" comparison goes quiet.
 
 **The one rule that governs step 4 (O6).** Writing `ready-to-review.md` is an
 assertion — "every comment is addressed" — not housekeeping. It releases the
@@ -489,16 +517,48 @@ assertion — "every comment is addressed" — not housekeeping. It releases the
 - Write it once every comment is dealt with, **including** a comment the agent
   decided needed no code change. Deciding is enough; changing is not required.
 - **Do not write it** for feedback the agent cannot address or cannot understand.
-  Escalate that instead (§6.2 mechanism) and leave the timestamp alone, so the task
-  stays in `review/` with the trigger live — which is accurate, because it still
-  needs a human.
+  Escalate that instead (§6.2.3) and leave the timestamp alone, so the task stays
+  in `review/` with the trigger live — which is accurate, because it still needs a
+  human.
 
 Never advance the timestamp to get unstuck. An agent that cannot understand
-feedback and writes the file anyway leaves the task looking refined while the
+feedback and writes the file anyway leaves the task looking dealt with while the
 reviewer's comment stands unanswered, which is the one outcome this whole loop
 exists to prevent.
 
-### 6.4 `/nm-workplan-execute` — drive the workplan
+#### 6.2.3 The escalation path — one, for both phases
+
+Every blocker in either phase comes here: three failed attempts at a criterion, a
+decision rather than a difficulty (escalated immediately, without spending the
+three), a gate that cannot pass without undoing the task, or a review comment that
+is unclear, impossible, or contrary to the acceptance criteria.
+
+Write `escalations/<timestamp>.md` (`YYYY-MM-DD-HH-MM-SS`, local) describing what
+was tried or what was said, and what decision is needed — naming the option the
+agent would pick, so the answer can be "yes". Write the file and **do not also ask
+interactively**: the orchestrator collects escalations on its next pass, and a
+dialog only deadlocks an agent with no terminal. Then **block** on the resolution
+rather than polling for it (§5.5.2 L2):
+
+```
+nm workplan await-resolution escalations/<timestamp>.md --timeout 60m
+```
+
+Run it as a backgrounded command and let the harness notify you when it exits:
+exit 0 means the resolution file appeared and is ready to read, exit 1 means the
+timeout elapsed. Do not re-check the file on a timer in between — that is the
+thing this command exists to replace.
+
+On timeout, stop with the escalation left open. It is already in the workplan,
+and `nm workplan resolve` lands the answer whenever it arrives, so nothing is
+lost by exiting; a later `/nm-task-execute` pass picks it up when it reads the
+directory.
+
+**An escalation from the review loop never advances `ready-to-review.md`.** That
+is what keeps the task in `review/` with the trigger live, which is the accurate
+statement: it still needs a human.
+
+### 6.3 `/nm-workplan-execute` — drive the workplan
 
 1. Read the workplan's current structure and the CLI behavior above.
 2. Take the workplan name as input. If invoked from inside a workplan directory,
@@ -517,7 +577,8 @@ exists to prevent.
 ## 7. Decisions on the open questions
 
 O1–O5 are **resolved** (answered 2026-09-23) and recorded here with the reasoning
-that produced them. O6 is new, and is the only thing still open.
+that produced them. O6 is new. O7 is later than the rest and revises the shape of
+§6 itself.
 
 **O1 — What does a successor branch from, when its predecessor is approved but
 not merged? → Stacked branches.** Step 5 starts a single-predecessor task as soon
@@ -547,9 +608,9 @@ merged; a re-run finishes the rest.
 
 **O3 — Sequencing `tg commit new` and `tg pr new`. → Stage, commit, verify clean,
 then open.** `tg commit new` needs staged changes; `tg pr new` errors if staged
-changes exist *or* if an open PR already exists for the head/base pair. So §6.2
-step 5 stages → commits → confirms the tree is clean → opens the PR, and
-`/nm-task-refine` never calls `tg pr new` again. The PR body is therefore
+changes exist *or* if an open PR already exists for the head/base pair. So §6.2.1
+step 4 stages → commits → confirms the tree is clean → opens the PR, and the
+refine loop (§6.2.2) never calls `tg pr new` again. The PR body is therefore
 generated from the commits rather than from the taskfile.
 
 **O4 — A 0-repo task has no PR, so it cannot reach `approved` by review.**
@@ -567,7 +628,7 @@ human resolution in `escalations/<id>/`, skipping `--merge` and moving straight 
   - `nm workplan execute task <name>` appears once against `nm workplan execute
     <name>` elsewhere. Standardizing on `nm workplan execute <name>`.
 
-**O6 — Should `/nm-task-refine` advance `ready-to-review.md` when it decides no
+**O6 — Should the refine loop advance `ready-to-review.md` when it decides no
 comment needed action? → Always advance, but only on a decision.** Tracking
 dismissed comment ids is deferred past v1.
 
@@ -592,6 +653,37 @@ pushed" from "read and dismissed". A reviewer whose comment was judged
 non-actionable gets no signal beyond the absence of a change. Recording dismissed
 comment ids (`tg pr comments` exposes stable ids) fixes it later without changing
 this contract.
+
+**O7 — Are doing the work and refining it one skill or two? → One.**
+`/nm-task-refine` is folded into `/nm-task-execute` as §6.2.2, and the escalation
+mechanism both phases used is lifted out into one §6.2.3. The options weighed:
+
+| Option | Cost | |
+|---|---|---|
+| **One skill, two phases, phase read from the task directory** | The skill must branch on state at §1 instead of being told | **chosen** |
+| Two skills, as originally specified | Every shared rule written twice, and they drift | |
+| Two skills with the shared rules in a third file both read | A second load step in unattended work, for the same total text | |
+
+The duplication was not incidental. Both phases run in the same worktree on the
+same task, run the same gate, publish through the same commands, and escalate in
+the same format to the same `await-resolution` call — so the split copied all of
+that, including the rule about never weakening a test to get a green gate, which is
+precisely the rule a refine round is tempted to break with a reviewer waiting. One
+copy cannot disagree with itself.
+
+The consequence for the orchestrator is small, and in the right direction: Step 3
+launches `task.TaskFilePrompt` rather than a second prompt, so the prompt no longer
+encodes which phase to run and cannot be wrong about it. The phase comes from the
+directory instead — `ready-to-review.md` plus an open pull request means review —
+which is the same reconciler property every other transition already has. The
+`refining.md` latch of §5.5.1 is untouched and still required; a refine round is now
+identified by its session name, `nm-refine-<label>`.
+
+The cost is real but bounded: the skill is longer, and its first job is to work out
+where in the task it is rather than to start working. That branch is three lines of
+table and reads the filesystem, which is cheaper than the alternative failure — two
+skills whose escalation rules have quietly diverged, discovered mid-round in
+unattended work.
 
 ---
 
@@ -707,7 +799,7 @@ over from hand execution.
 **08-skills-and-install**
 - *predecessors*: `06-execute-state-machine`
 - *repositories*: `nm`
-- *description*: Author the four SKILL.md files of §6, embed them with
+- *description*: Author the SKILL.md files of §6, embed them with
   `go:embed`, and add `nm self install-skills` writing
   `~/.claude/skills/<name>/SKILL.md` — identical content is left alone, a
   conflict fails without `--force`, symlinked destinations are refused. Fold it
@@ -904,6 +996,10 @@ resume round trip.
 
 **Still unverified:** the refine latch against a live reviewer. The
 one-agent-across-ten-passes property is unit-tested but has not met a real comment.
+Nor has the phase detection O7 introduced: a refine round is launched with the same
+prompt as a fresh task, so §6.2's opening table — not the prompt — is what stops it
+re-reading the acceptance criteria and declaring the work already done. That branch
+is only exercised for real the first time a reviewer comments.
 
 ---
 
@@ -912,7 +1008,8 @@ one-agent-across-ten-passes property is unit-tested but has not met a real comme
 | Risk | Why it matters | Mitigation |
 |---|---|---|
 | Step 3 starting a refine agent every minute for the length of a refine round | ~20 agents committing over each other in one worktree. The one genuinely unlatched transition | The `refining.md` marker of §5.5.1, plus a liveness check to tell *running* from *crashed* |
-| `/nm-task-execute` looping on an unmeetable criterion | Burns tokens indefinitely, unattended | Escalate after 3 failed attempts at the same criterion (§6.2) |
+| `/nm-task-execute` looping on an unmeetable criterion | Burns tokens indefinitely, unattended | Escalate after 3 failed attempts at the same criterion (§6.2.1) |
+| One skill covering both phases losing the review half to a later edit | A task sits in `review/` while an agent reads met criteria and stops — silent from outside | `TestTaskExecuteCoversTheReviewLoop` pins the review loop's load-bearing lines: `tg pr comments`, the ready-marker assertion, the no-second-PR rule, and `await-resolution` |
 | An unanswered escalation polling forever | ~360 context reloads overnight for an idle agent | `nm workplan await-resolution` blocks one process instead (§5.5.2 L2), with a 60m timeout after which the agent exits leaving the escalation open |
 | `await-resolution` blocking forever if the timeout is dropped | An agent pinned on a dead wait, invisible in `nm tasks` | `--timeout` has a default rather than meaning "forever"; exit 1 is a normal outcome the skill handles |
 | `ready-to-review.md` as the sole In-progress→Review signal | An agent that dies after writing it but before the PR is green moves a broken task to review | Step 2 could also require an open PR; deferred, since a spurious `review/` is visible and cheap to undo |
