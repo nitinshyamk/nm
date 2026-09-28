@@ -47,10 +47,10 @@ func FetchBranch(dir, remote, branch string) error {
 func AddWorktreeTracking(repoDir, path, remote, branch string) error {
 	if BranchExists(repoDir, branch) {
 		_, err := Run(repoDir, "worktree", "add", path, branch)
-		return err
+		return explainLongPaths(err)
 	}
 	_, err := Run(repoDir, "worktree", "add", "--track", "-b", branch, path, remote+"/"+branch)
-	return err
+	return explainLongPaths(err)
 }
 
 // PullRebase replays the current branch on top of a branch fetched from a

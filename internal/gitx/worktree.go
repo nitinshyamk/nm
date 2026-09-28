@@ -9,7 +9,28 @@ import (
 // AddWorktree creates a worktree at path on a new branch cut from commit.
 func AddWorktree(repoDir, path, branch, commit string) error {
 	_, err := Run(repoDir, "worktree", "add", "-b", branch, path, commit)
-	return err
+	return explainLongPaths(err)
+}
+
+// explainLongPaths names the git setting behind a "Filename too long" checkout
+// failure, which otherwise reads as a problem with the repository.
+//
+// A default Windows git install refuses paths over 260 characters, and a task
+// directory is already several segments deep before the repository's own tree
+// starts — so a repository with long nested paths fails to check out at all, in a
+// way indistinguishable from a real error. The remedy is one setting, and it is
+// worth naming rather than leaving to be rediscovered.
+//
+// It is checked on the error rather than at startup deliberately: `core.longpaths`
+// only matters for repositories that actually have such paths, so a startup warning
+// would fire for everyone and mean nothing to almost all of them.
+func explainLongPaths(err error) error {
+	if err == nil || !strings.Contains(err.Error(), "Filename too long") {
+		return err
+	}
+	return fmt.Errorf("%w\n\nThis is the 260-character path limit a default Windows git install "+
+		"enforces, not a problem with the repository. Enable long paths and try again:\n"+
+		"    git config --global core.longpaths true", err)
 }
 
 // RemoveWorktree removes a worktree; force discards uncommitted changes.

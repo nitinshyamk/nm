@@ -612,7 +612,7 @@ func (p *pass) plannedToInProgress(result *Result) {
 // has to be rebased. That is the trade — the chain keeps moving, and the rework is
 // bounded by how much review alters the predecessor.
 //
-// Whatever states this accepts, stackBase must know how to branch from. The two
+// Whatever states this accepts, stackBases must know how to branch from. The two
 // are one decision, and TestEligibleAndStackBaseAgree holds them together.
 func (p *pass) eligible(t Task) (bool, string) {
 	switch len(t.Predecessors) {
@@ -653,7 +653,7 @@ func (p *pass) stateOf(id string) string {
 // started again next pass; task.Create then refuses the directory that already
 // exists, so the duplicate fails loudly rather than producing a second agent.
 func (p *pass) start(result *Result, t Task) {
-	base, err := p.stackBase(t)
+	bases, err := p.stackBases(t)
 	if err != nil {
 		result.Problems = append(result.Problems, fmt.Sprintf("%s: %v", t.ID, err))
 		return
@@ -667,7 +667,7 @@ func (p *pass) start(result *Result, t Task) {
 		TaskFile:  p.w.TaskFile(Planned, t.ID),
 		Workplan:  p.w.Name,
 		TaskID:    t.ID,
-		Base:      base,
+		Bases:     bases,
 	})
 	if err != nil {
 		result.Problems = append(result.Problems, fmt.Sprintf("%s: starting: %v", t.ID, err))
@@ -717,14 +717,23 @@ func (p *pass) artifactsIfAny() string {
 	return p.w.Artifacts()
 }
 
-// stackBase resolves where a task's branch is cut from.
+// stackBases resolves where each of a task's branches is cut from, keyed by
+// repository name.
 //
 // A task whose single predecessor is approved but not yet merged must branch from
 // that predecessor's branch: main does not contain the work this task was scoped
 // to build on, so starting there would duplicate or conflict with it. A completed
 // predecessor is already in main, so the usual resolution is correct and nil is
 // returned.
-func (p *pass) stackBase(t Task) (*gitx.Base, error) {
+//
+// One base per repository, and that is the whole point of the map. A commit id is
+// meaningful only inside the repository that produced it, so resolving the
+// predecessor's head once and reusing it across a task's repositories handed one
+// repository's commit to another's `git worktree add`. That failed with "fatal:
+// invalid reference: <sha>" — after the first repository's worktree and branch were
+// already created, which then made every later attempt fail with "already exists".
+// Every two-repository row in the workplan was blocked this way.
+func (p *pass) stackBases(t Task) (map[string]gitx.Base, error) {
 	if len(t.Predecessors) != 1 {
 		return nil, nil
 	}
@@ -741,20 +750,29 @@ func (p *pass) stackBase(t Task) (*gitx.Base, error) {
 		return nil, fmt.Errorf("predecessor %s is at %s but its task directory is gone, "+
 			"so there is nothing to stack on", pred, p.state[pred])
 	}
-	// Stacking is per repository, and Options carries one base. A task sharing
-	// every repository with its predecessor is the case that matters; anything
-	// else is reported rather than guessed at.
+
+	bases := make(map[string]gitx.Base, len(t.Repositories))
 	for _, repo := range t.Repositories {
-		if _, found := repoIn(predTask, repo); !found {
+		// A repository the predecessor does not have has no branch to stack on, and
+		// guessing — main, or another repository's base — is what this whole function
+		// exists to stop. Reported instead.
+		predRepo, found := repoIn(predTask, repo)
+		if !found {
 			return nil, fmt.Errorf("cannot stack on %s: it does not include %s", pred, repo)
 		}
+		// Each repository's own worktree in the predecessor's task, so each commit
+		// comes from the repository it will be used in.
+		head, err := gitx.Head(predRepo.Dir)
+		if err != nil {
+			return nil, fmt.Errorf("reading the head of %s in %s: %w", repo, pred, err)
+		}
+		bases[repo] = gitx.Base{
+			Branch: predRepo.Branch,
+			Commit: head,
+			Source: "predecessor " + pred,
+		}
 	}
-	first, _ := repoIn(predTask, t.Repositories[0])
-	head, err := gitx.Head(first.Dir)
-	if err != nil {
-		return nil, fmt.Errorf("reading the head of %s: %w", pred, err)
-	}
-	return &gitx.Base{Branch: first.Branch, Commit: head, Source: "predecessor " + pred}, nil
+	return bases, nil
 }
 
 // stackableStates are the predecessor states whose work exists on a branch but is
@@ -763,7 +781,7 @@ func (p *pass) stackBase(t Task) (*gitx.Base, error) {
 // Completed is deliberately absent: it is merged, so the ordinary base already
 // contains it and stacking would pin the successor to a branch it does not need.
 //
-// This is the single place the set is written down, because eligible and stackBase
+// This is the single place the set is written down, because eligible and stackBases
 // are one decision. A state the first accepts and the second does not would start a
 // successor from main, silently missing the work it was scoped to build on — which
 // looks like a successful start rather than a failure.

@@ -171,13 +171,20 @@ type Options struct {
 	Workplan string
 	TaskID   string
 
-	// Base overrides the branch point. Empty means the usual behavior — branch
-	// from the remote's current default branch.
+	// Bases overrides the branch point, per repository, keyed by repository name.
+	// Empty means the usual behavior — each repository branches from its own
+	// remote's current default branch.
 	//
 	// It exists for stacked work: a task whose predecessor is approved but not
 	// yet merged has to branch from that predecessor's branch, or it starts from
 	// a base that does not contain the work it was scoped to build on.
-	Base *gitx.Base
+	//
+	// Keyed per repository because a commit id means nothing outside the repository
+	// it came from. One shared base across a two-repo task resolved the predecessor's
+	// tip in one of them and handed that id to `git worktree add` in both, where the
+	// second failed with "fatal: invalid reference" — and by then the first repo's
+	// branch existed, so every later attempt failed with "already exists" instead.
+	Bases map[string]gitx.Base
 }
 
 // Create builds a task directory with a worktree per repository.
@@ -242,23 +249,30 @@ func Create(cfg config.Config, opts Options) (t Task, err error) {
 			return
 		}
 		for _, r := range built {
-			_, _ = worktree.Remove(r.Source, r.Dir, r.Branch, true)
+			// Remove drops the branch through `git branch -d`, which refuses one that
+			// is not merged into its upstream or HEAD — true of every branch cut from
+			// an unmerged predecessor, so a stacked task's unwind left its branch
+			// behind. Nothing had been committed to it, so force is safe here and is
+			// what makes the retry clean: the branch this attempt created is debris,
+			// and leaving it is what turned one failure into a permanent block.
+			_, _ = worktree.Remove(r.Source, r.Dir, "", true)
+			_ = gitx.DeleteBranch(r.Source, r.Branch, true)
 		}
 		_ = os.RemoveAll(dir)
 	}()
 
 	for _, repo := range opts.Repos {
 		source := cfg.RepoPath(repo)
-		if gitx.BranchExists(source, branch) {
-			return Task{}, fmt.Errorf("branch %s already exists in %s", branch, source)
-		}
 		// An explicit base is stacked work: the caller has already resolved which
 		// commit this task builds on, and asking the remote for its default
 		// branch would discard exactly that decision — which is the point, since
 		// the predecessor's branch is usually not merged yet.
-		base, baseErr := resolveBase(source, cfg, opts)
+		base, baseErr := resolveBase(repo, source, cfg, opts)
 		if baseErr != nil {
 			return Task{}, baseErr
+		}
+		if err := reclaimBranch(source, branch, base.Commit); err != nil {
+			return Task{}, err
 		}
 		worktreeDir := filepath.Join(dir, repo+"-"+hash)
 		if addErr := gitx.AddWorktree(source, worktreeDir, branch, base.Commit); addErr != nil {
@@ -306,13 +320,79 @@ func Create(cfg config.Config, opts Options) (t Task, err error) {
 	return t, nil
 }
 
-// resolveBase answers where a task's branch is cut from: the caller's explicit
-// base when there is one, otherwise the remote's current default branch.
-func resolveBase(source string, cfg config.Config, opts Options) (gitx.Base, error) {
-	if opts.Base != nil {
-		return *opts.Base, nil
+// resolveBase answers where one repository's branch is cut from: the caller's
+// explicit base for that repository when there is one, otherwise that
+// repository's own remote default branch.
+//
+// The repository name is the key, and the lookup is per repository rather than
+// per task, because a commit id is only meaningful inside the repository that
+// produced it. Resolving once and reusing the answer is what made a two-repo
+// stacked task hand one repo's commit to the other's `git worktree add`.
+func resolveBase(repo, source string, cfg config.Config, opts Options) (gitx.Base, error) {
+	if base, ok := opts.Bases[repo]; ok {
+		if base.Commit == "" {
+			return gitx.Base{}, fmt.Errorf("the base given for %s has no commit", repo)
+		}
+		// Verified here rather than left to `git worktree add`, because git's
+		// "fatal: invalid reference: <sha>" says nothing about which repository was
+		// asked or where the commit came from — and that was the whole difficulty in
+		// diagnosing the cross-repo base.
+		if !gitx.CommitExists(source, base.Commit) {
+			return gitx.Base{}, fmt.Errorf("base commit %s for %s does not exist in %s "+
+				"(a base resolved in one repository cannot be used in another)",
+				base.Commit, repo, source)
+		}
+		return base, nil
 	}
 	return gitx.ResolveBase(source, cfg.DefaultBaseBranch, opts.Offline)
+}
+
+// reclaimBranch clears a leftover branch of this task's name when it holds no work,
+// and refuses when it holds work that exists nowhere else.
+//
+// It is the second half of making a failed Create retryable. The unwind below already
+// removes the worktrees a failed attempt built, but removing the branch goes through
+// `git branch -d`, which refuses anything not merged into its upstream or HEAD — and a
+// branch cut from an unmerged predecessor is never either of those. So the branch
+// survived the unwind, and every later pass stopped at "branch already exists in
+// <repo>" instead of retrying. Recovery meant `git branch -D` by hand.
+//
+// The test for "holds no work" is whether some other ref already contains the branch's
+// tip. That is exactly true of debris: a branch created by `worktree add -b` and never
+// committed to still points at the base it was cut from, which the base branch — or
+// the predecessor's branch — still holds. A branch with its own commits is contained by
+// nothing else, and is refused with a message naming what to do about it.
+func reclaimBranch(source, branch, baseCommit string) error {
+	if !gitx.BranchExists(source, branch) {
+		return nil
+	}
+
+	tip, err := gitx.BranchCommit(source, branch)
+	if err != nil {
+		return fmt.Errorf("branch %s already exists in %s and could not be read: %w", branch, source, err)
+	}
+
+	// Checked out somewhere is not debris whatever it points at: some worktree is
+	// using it, and removing the branch from under it would strand that worktree.
+	if held, taken := gitx.WorktreeForBranch(source, branch); taken {
+		return fmt.Errorf("branch %s already exists in %s and is checked out at %s; "+
+			"remove that worktree first, or with nm: nm task remove <task>", branch, source, held)
+	}
+
+	// The commit this attempt would cut from, and anything else that already has the
+	// tip. Naming the base explicitly covers the case where it is the only thing
+	// containing the tip and is not itself a ref — a raw predecessor commit.
+	if tip != baseCommit && len(gitx.RefsContaining(source, tip, branch)) == 0 {
+		return fmt.Errorf("branch %s already exists in %s and holds commits that exist "+
+			"nowhere else, so nm will not delete it; keep it (rename it) or drop it with: "+
+			"git -C %s branch -D %s", branch, source, source, branch)
+	}
+
+	if err := gitx.DeleteBranch(source, branch, true); err != nil {
+		return fmt.Errorf("branch %s already exists in %s and holds no work, but could not "+
+			"be removed: %w", branch, source, err)
+	}
+	return nil
 }
 
 func firstDuplicate(values []string) string {
