@@ -221,27 +221,73 @@ func awaitFeedback(ctx context.Context, w FeedbackWaiter, t task.Task, since tim
 // pollFeedback reads every repository's pull request once and reports the first
 // thing worth waking for.
 //
+// Feedback on any one pull request wakes the agent immediately: a reviewer's comment
+// is something to action wherever it landed, and the other repositories are still in
+// review afterwards. A *terminal* verdict is the opposite — it tells the agent to
+// stop — so it is only reported once every repository agrees, because a task spanning
+// two repositories is one unit of work and one of its pull requests being finished is
+// not the task being finished.
+//
+// That distinction is the bug this shape exists to prevent. A task with a small
+// catalog change and a large sidebar change would have the small one merged first,
+// and reporting `merged` for it ended the wait instantly and forever, while the
+// sidebar pull request was still open and unreviewed. The skill treats `merged` as
+// "you are done — stop", so the agent that should have been answering the reviewer on
+// the second pull request had already exited. Both agents that hit it noticed and
+// substituted their own polling loop rather than obeying, which is how it surfaced.
+//
 // A read that errors is treated as "nothing yet" rather than fatal. A blocked agent
 // is the wrong place to fail on a transient `gh` hiccup: exiting would end the round
-// and lose the session, where waiting another interval costs one more call.
+// and lose the session, where waiting another interval costs one more call. The same
+// applies to a repository whose pull request cannot be read while deciding a terminal
+// verdict — it counts as not finished, so an unreadable pull request delays the verdict
+// rather than fabricating one.
 func pollFeedback(w FeedbackWaiter, t task.Task, since time.Time) (Feedback, bool) {
+	// terminal holds the finished pull requests seen this round. A verdict is only
+	// returned from it once every repository is accounted for.
+	terminal := make([]Feedback, 0, len(t.Repos))
+
 	for _, repo := range t.Repos {
 		status, err := w.StatusForBranch(repo.Dir, repo.Branch)
 		if err != nil || status == nil {
 			continue
 		}
-		// Merged first, then approved: both are terminal, and a merged pull request
-		// that was also approved is more usefully reported as merged, because there
-		// is no longer anything to push to.
+		// Merged before approved: both are terminal, and a merged pull request that
+		// was also approved is more usefully reported as merged, because there is no
+		// longer anything to push to.
 		switch {
 		case status.Merged():
-			return Feedback{Verdict: VerdictMerged, Repo: repo.Name, Number: status.Number}, true
+			terminal = append(terminal, Feedback{Verdict: VerdictMerged, Repo: repo.Name, Number: status.Number})
+			continue
 		case status.Approved():
-			return Feedback{Verdict: VerdictApproved, Repo: repo.Name, Number: status.Number}, true
+			terminal = append(terminal, Feedback{Verdict: VerdictApproved, Repo: repo.Name, Number: status.Number})
+			continue
 		}
+		// This pull request is still in review. Feedback on it wakes the agent now,
+		// whatever the others are doing.
 		if at, ok := status.FeedbackAfter(since); ok {
 			return Feedback{Verdict: VerdictFeedback, Repo: repo.Name, Number: status.Number, At: at}, true
 		}
 	}
+
+	if len(terminal) == len(t.Repos) {
+		return summarizeTerminal(terminal), true
+	}
 	return Feedback{}, false
+}
+
+// summarizeTerminal reduces one terminal verdict per repository to the single one the
+// agent is told, once they all agree the work is finished.
+//
+// An approved-but-unmerged pull request is named in preference to a merged one, because
+// which pull request is named is what the agent reads back — and a merged one is the
+// one it can no longer push to. With every repository merged there is no such choice,
+// so the first is as good as any.
+func summarizeTerminal(verdicts []Feedback) Feedback {
+	for _, v := range verdicts {
+		if v.Verdict != VerdictMerged {
+			return v
+		}
+	}
+	return verdicts[0]
 }

@@ -286,6 +286,146 @@ func TestAwaitFeedbackKeepsWaitingThroughAForgeError(t *testing.T) {
 	}
 }
 
+// byBranchWaiter answers per branch, so a multi-repo task can have one pull request
+// merged and another still open.
+type byBranchWaiter struct {
+	statuses map[string]*forge.Status
+	calls    int
+}
+
+func (b *byBranchWaiter) StatusForBranch(_, branch string) (*forge.Status, error) {
+	b.calls++
+	return b.statuses[branch], nil
+}
+
+// twoRepoTask is a task spanning two repositories, each with its own branch.
+func twoRepoTask(dir string) task.Task {
+	return task.Task{Dir: dir, TaskID: "11-a", Repos: []task.Repo{
+		{Name: "catalog", Dir: dir, Branch: "catalog-b"},
+		{Name: "sidebar", Dir: dir, Branch: "sidebar-b"},
+	}}
+}
+
+// One of two pull requests merged is not the task being finished, so the wait must
+// keep waiting rather than telling the agent to stop.
+//
+// This was a real failure on two separate tasks. A task with a small catalog change and
+// a large sidebar change had the small one merged first; the wait reported
+// `merged laser-agentic-contract-migration#10` and exited zero — instantly, and forever
+// after, because a merge never un-merges. The skill treats `merged` as "you are done —
+// stop", so the agent that should have stayed to answer the reviewer on the still-open
+// sidebar pull request had already left. Both agents that hit it noticed the verdict was
+// wrong and substituted their own polling loop rather than obeying it.
+func TestAwaitFeedbackKeepsWaitingWhileAnotherPullRequestIsOpen(t *testing.T) {
+	published := time.Date(2026, 5, 1, 8, 0, 0, 0, time.UTC)
+	w := &byBranchWaiter{statuses: map[string]*forge.Status{
+		"catalog-b": {Number: 10, State: forge.StateMerged},
+		"sidebar-b": {Number: 4953, State: forge.StateOpen, Decision: "REVIEW_REQUIRED"},
+	}}
+
+	_, err := AwaitFeedback(context.Background(), w, twoRepoTask(t.TempDir()), published, 50*time.Millisecond)
+	if !errors.Is(err, ErrFeedbackTimeout) {
+		t.Errorf("err = %v, want a timeout: one merged pull request is not a finished task", err)
+	}
+}
+
+// Feedback on one pull request wakes the agent even while another is already merged.
+//
+// The rule is not "wait for everything": a reviewer's comment is something to action
+// wherever it landed. Only the *terminal* verdicts — the ones that tell the agent to
+// stop — wait for every repository to agree.
+func TestAwaitFeedbackWakesOnFeedbackBesideAMergedPullRequest(t *testing.T) {
+	published := time.Date(2026, 5, 1, 8, 0, 0, 0, time.UTC)
+	commented := published.Add(time.Minute)
+	w := &byBranchWaiter{statuses: map[string]*forge.Status{
+		"catalog-b": {Number: 10, State: forge.StateMerged},
+		"sidebar-b": {
+			Number: 4953, State: forge.StateOpen,
+			Comments: []forge.Comment{{Author: "reviewer", CreatedAt: commented}},
+		},
+	}}
+
+	got, err := AwaitFeedback(context.Background(), w, twoRepoTask(t.TempDir()), published, time.Minute)
+	if err != nil {
+		t.Fatalf("AwaitFeedback: %v", err)
+	}
+	if got.Verdict != VerdictFeedback {
+		t.Errorf("verdict = %q, want feedback", got.Verdict)
+	}
+	if got.Number != 4953 {
+		t.Errorf("named pull request #%d, want the one with the comment (#4953)", got.Number)
+	}
+}
+
+// Once every repository is finished the wait ends, and says which kind of finished.
+func TestAwaitFeedbackEndsWhenEveryRepositoryIsFinished(t *testing.T) {
+	published := time.Date(2026, 5, 1, 8, 0, 0, 0, time.UTC)
+	cases := map[string]struct {
+		statuses map[string]*forge.Status
+		want     Verdict
+		number   int
+	}{
+		"both merged": {
+			statuses: map[string]*forge.Status{
+				"catalog-b": {Number: 10, State: forge.StateMerged},
+				"sidebar-b": {Number: 4953, State: forge.StateMerged},
+			},
+			want: VerdictMerged, number: 10,
+		},
+		"both approved": {
+			statuses: map[string]*forge.Status{
+				"catalog-b": {Number: 10, State: forge.StateOpen, Decision: forge.DecisionApproved},
+				"sidebar-b": {Number: 4953, State: forge.StateOpen, Decision: forge.DecisionApproved},
+			},
+			want: VerdictApproved, number: 10,
+		},
+		// One merged and one approved is finished too. The approved one is named
+		// because it is the pull request still open — the merged one can no longer be
+		// pushed to, so it is the less useful of the two to point the agent at.
+		"one merged, one approved": {
+			statuses: map[string]*forge.Status{
+				"catalog-b": {Number: 10, State: forge.StateMerged},
+				"sidebar-b": {Number: 4953, State: forge.StateOpen, Decision: forge.DecisionApproved},
+			},
+			want: VerdictApproved, number: 4953,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			w := &byBranchWaiter{statuses: tc.statuses}
+			got, err := AwaitFeedback(context.Background(), w, twoRepoTask(t.TempDir()), published, time.Minute)
+			if err != nil {
+				t.Fatalf("AwaitFeedback: %v", err)
+			}
+			if got.Verdict != tc.want {
+				t.Errorf("verdict = %q, want %q", got.Verdict, tc.want)
+			}
+			if got.Number != tc.number {
+				t.Errorf("named pull request #%d, want #%d", got.Number, tc.number)
+			}
+		})
+	}
+}
+
+// A repository whose pull request cannot be read is not a finished one.
+//
+// Counting an unreadable pull request as finished would let a transient `gh` failure
+// manufacture a "you are done" verdict — the one outcome an agent cannot come back
+// from, since it exits on it.
+func TestAwaitFeedbackDoesNotFinishOnAnUnreadablePullRequest(t *testing.T) {
+	published := time.Date(2026, 5, 1, 8, 0, 0, 0, time.UTC)
+	w := &byBranchWaiter{statuses: map[string]*forge.Status{
+		"catalog-b": {Number: 10, State: forge.StateMerged},
+		// sidebar-b is absent: the forge said it has no pull request.
+	}}
+
+	_, err := AwaitFeedback(context.Background(), w, twoRepoTask(t.TempDir()), published, 50*time.Millisecond)
+	if !errors.Is(err, ErrFeedbackTimeout) {
+		t.Errorf("err = %v, want a timeout: an unreadable pull request is not a finished one", err)
+	}
+}
+
 // A cancelled context stops the wait, so stopping the agent stops its poller.
 func TestAwaitFeedbackStopsWhenCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

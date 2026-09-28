@@ -360,6 +360,11 @@ func newWorkplanAwaitFeedbackCmd() *cobra.Command {
 			"  feedback nm#12 at 2026-05-01T09:12:44Z   action it, then wait again\n" +
 			"  approved nm#12                           the task is done\n" +
 			"  merged   nm#12                           already in the base branch\n\n" +
+			"On a task spanning several repositories, approved and merged mean every\n" +
+			"one of them is finished: a task is one unit of work, so one pull request\n" +
+			"merging while another is still open does not end the wait. Feedback is\n" +
+			"the exception — a reviewer's comment is worth waking for wherever it\n" +
+			"landed, and the others are still in review afterwards.\n\n" +
 			"This is what lets one agent own a task end to end rather than exiting\n" +
 			"after publishing and being replaced for each review round. A replacement\n" +
 			"loses everything the first agent knew and can overlap with it in the same\n" +
