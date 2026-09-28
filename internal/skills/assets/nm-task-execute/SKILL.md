@@ -140,8 +140,14 @@ of three verdicts:
 | It prints | What it means | What you do |
 |---|---|---|
 | `feedback <repo>#<n> at <time>` | a reviewer commented or requested changes | §5.2 |
-| `approved <repo>#<n>` | approved as it stands | you are done — stop |
-| `merged <repo>#<n>` | already in the base branch | you are done — stop |
+| `approved <repo>#<n>` | every repository is approved | you are done — stop |
+| `merged <repo>#<n>` | every repository is in its base branch | you are done — stop |
+
+On a task spanning several repositories, `approved` and `merged` mean **all** of them
+are finished — one pull request merging while another is still open does not end the
+wait. `feedback` is the exception and only names one pull request: action it wherever it
+landed, then come back here. So the pull request named in a verdict is where to look,
+not the whole of what the verdict is about.
 
 **Do not poll for feedback yourself.** No `sleep` loops, no re-running `tg pr
 comments` on a timer. Each of your own wakeups reloads this whole conversation, where

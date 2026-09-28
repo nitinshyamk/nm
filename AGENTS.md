@@ -66,9 +66,32 @@ Eight things here are load-bearing and easy to break by accident:
   surfaced for a human to look at with `claude attach`, and the orchestrator's message
   says "needs manual review" rather than naming a remedy — the remedy depends on why it
   died.
+- **A base commit belongs to one repository, so a multi-repo task needs one per
+  repository.** `task.Options.Bases` is keyed by repository name for this reason.
+  Resolving a stacked base once — the predecessor's head — and reusing that commit id
+  across a task's repositories handed one repository's commit to another's
+  `git worktree add`, which failed with `fatal: invalid reference: <sha>`. A
+  single-repo task cannot catch it, and neither can a multi-repo task branching from
+  the default branch, where each repository resolves its own `main`: it takes both
+  repositories *and* a stacked base.
+- **A failed `task.Create` must leave no branch behind.** The unwind force-deletes the
+  branches it created, because `git branch -d` refuses one that is not merged into its
+  upstream or HEAD — true of every branch cut from an unmerged predecessor. Without
+  that, one transient failure became permanent: the leftover branch made every later
+  pass stop at "branch already exists" rather than retrying, which in practice meant a
+  whole workplan blocked for a day and `git branch -D` by hand to recover. `Create`
+  also reclaims a leftover branch whose tip another ref already holds — debris — and
+  refuses one carrying commits that exist nowhere else.
 - **Read pull requests with `--state all`, never just open.** A merged pull request
   is how a task's life normally ends; filtering to open ones made a merged task look
   like work that was never published and stuck it in `review` forever.
+- **A task is in review while *any* of its pull requests is open.** `await-feedback`
+  only reports `approved` or `merged` once every repository agrees, because those are
+  what tell an agent to stop. Reporting the newest terminal verdict across a task meant
+  a small catalog pull request merging first ended the wait instantly and forever,
+  while the large sidebar one was still open and unreviewed — and the agent that should
+  have answered the reviewer had already exited on it. `feedback` is deliberately not
+  held to that rule: a comment is worth waking for wherever it landed.
 - **`--merge` gates nm performing a merge, not noticing one.** A pull request merged
   by hand still completes its task without the flag.
 - **An agent's pull request comments are prefixed `nm-agent:`.** A reviewer weighs an
