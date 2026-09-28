@@ -106,3 +106,22 @@ func BranchExists(dir, branch string) bool {
 	_, err := Run(dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	return err == nil
 }
+
+// CommitExists reports whether a commit is present in a repository.
+//
+// It exists so a base resolved elsewhere can be checked against the repository it
+// is about to be used in: a commit id is meaningful only inside the repository that
+// produced it, and `git worktree add` answers a foreign one with "fatal: invalid
+// reference: <sha>", which names neither repository.
+func CommitExists(dir, commit string) bool {
+	out, err := Run(dir, "cat-file", "-t", commit)
+	return err == nil && out == "commit"
+}
+
+// BranchCommit returns the commit a local branch points at.
+//
+// Read through refs/heads/ rather than the bare name, so a branch and a tag of the
+// same name cannot answer for each other.
+func BranchCommit(dir, branch string) (string, error) {
+	return Run(dir, "rev-parse", "--verify", "refs/heads/"+branch)
+}

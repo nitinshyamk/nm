@@ -182,8 +182,16 @@ func TestCreateUnwindsTheFirstRepoWhenASecondFails(t *testing.T) {
 	cfg := env(t, "aa", "zz")
 	branch := "late-" + Hash(cfg.HashLength, "late", []string{"aa", "zz"})
 	// Pre-create the branch in zz only, so aa's worktree is built and zz's is
-	// refused.
+	// refused. It carries a commit of its own, which is what makes it a real
+	// obstruction rather than debris Create is now entitled to clear away.
 	git(t, cfg.RepoPath("zz"), "branch", branch)
+	git(t, cfg.RepoPath("zz"), "checkout", "--quiet", branch)
+	if err := os.WriteFile(filepath.Join(cfg.RepoPath("zz"), "held.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, cfg.RepoPath("zz"), "add", "-A")
+	git(t, cfg.RepoPath("zz"), "commit", "-m", "work nobody else has")
+	git(t, cfg.RepoPath("zz"), "checkout", "--quiet", "main")
 
 	if _, err := Create(cfg, Options{Name: "late", Repos: []string{"aa", "zz"}}); err == nil {
 		t.Fatal("Create succeeded despite a pre-existing branch in the second repository")
@@ -207,6 +215,133 @@ func TestCreateUnwindsTheFirstRepoWhenASecondFails(t *testing.T) {
 	}
 }
 
+// A branch holding commits that exist nowhere else is never deleted to make room
+// for a retry, and the refusal says what to do about it.
+//
+// This is the limit on the reclaim above. Clearing debris is what makes a failed
+// stacked task retryable; deleting a branch somebody's work is on would be losing
+// that work to save a retry, which is the wrong trade in every case.
+func TestCreateRefusesABranchThatHoldsWork(t *testing.T) {
+	cfg := env(t, "nm")
+	source := cfg.RepoPath("nm")
+	branch := "01-a-" + Hash(cfg.HashLength, "01-a", []string{"nm"})
+
+	git(t, source, "checkout", "--quiet", "-b", branch)
+	if err := os.WriteFile(filepath.Join(source, "precious.txt"), []byte("unique\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, source, "add", "-A")
+	git(t, source, "commit", "-m", "work that exists nowhere else")
+	head := git(t, source, "rev-parse", "HEAD")
+	git(t, source, "checkout", "--quiet", "main")
+
+	_, err := Create(cfg, Options{Name: "01-a", Repos: []string{"nm"}})
+	if err == nil {
+		t.Fatal("Create deleted a branch holding unique commits")
+	}
+	if !strings.Contains(err.Error(), "exist") {
+		t.Errorf("the refusal does not say why the branch was kept: %v", err)
+	}
+
+	if !gitx.BranchExists(source, branch) {
+		t.Fatal("the branch was deleted despite holding work")
+	}
+	if got, err := gitx.BranchCommit(source, branch); err != nil || got != head {
+		t.Errorf("branch tip = %q (%v), want the commit it held %q", got, err, head)
+	}
+}
+
+// A leftover branch that holds no work is cleared away, so a retry after a failed
+// attempt succeeds instead of reporting "already exists" forever.
+//
+// This is the recovery half of the cross-repo base bug. A two-repository stacked task
+// built its first worktree, failed on the second, and the unwind could not remove the
+// first branch — `git branch -d` refuses one that is not merged into its upstream or
+// HEAD, which is true of every branch cut from an unmerged predecessor. So the branch
+// survived and every later pass stopped at "branch already exists", turning one
+// transient failure into a permanent block. Recovery took `git branch -D` by hand.
+func TestCreateRetriesAfterAFailureOnAStackedBase(t *testing.T) {
+	cfg := env(t, "aa", "zz")
+	name := "12-stacked"
+	branch := name + "-" + Hash(cfg.HashLength, name, []string{"aa", "zz"})
+
+	// A predecessor's branch in each repository, unmerged — the shape that made the
+	// unwind's `git branch -d` refuse.
+	bases := map[string]gitx.Base{}
+	for _, repo := range []string{"aa", "zz"} {
+		source := cfg.RepoPath(repo)
+		git(t, source, "checkout", "--quiet", "-b", "predecessor")
+		if err := os.WriteFile(filepath.Join(source, "pred.txt"), []byte("from "+repo+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, source, "add", "-A")
+		git(t, source, "commit", "-m", "predecessor work in "+repo)
+		bases[repo] = gitx.Base{
+			Branch: "predecessor",
+			Commit: git(t, source, "rev-parse", "HEAD"),
+			Source: "predecessor",
+		}
+		git(t, source, "checkout", "--quiet", "main")
+	}
+
+	// Make the second repository fail, the way the cross-repo base did: a commit that
+	// is not in it. The first repository's worktree is built before this is reached.
+	broken := map[string]gitx.Base{"aa": bases["aa"], "zz": bases["aa"]}
+	if _, err := Create(cfg, Options{Name: name, Repos: []string{"aa", "zz"}, Bases: broken}); err == nil {
+		t.Fatal("Create accepted a base commit from another repository")
+	}
+	if gitx.BranchExists(cfg.RepoPath("aa"), branch) {
+		t.Errorf("branch %s survived the unwind, so a retry would report it as already existing", branch)
+	}
+
+	// The retry, with each repository's own base. This is what ran for 24 hours
+	// reporting "already exists" instead.
+	created, err := Create(cfg, Options{Name: name, Repos: []string{"aa", "zz"}, Bases: bases})
+	if err != nil {
+		t.Fatalf("the task could not be retried after a failed attempt: %v", err)
+	}
+	for _, r := range created.Repos {
+		if got := r.BaseCommit; got != bases[r.Name].Commit {
+			t.Errorf("%s branched from %q, want its own predecessor tip %q", r.Name, got, bases[r.Name].Commit)
+		}
+		if _, err := os.Stat(filepath.Join(r.Dir, "pred.txt")); err != nil {
+			t.Errorf("%s does not contain its predecessor's work: %v", r.Name, err)
+		}
+	}
+}
+
+// A base commit from another repository is refused before anything is built, and the
+// error says which repository it was wrong for.
+//
+// git answers a foreign commit with "fatal: invalid reference: <sha>", which names
+// neither the repository asked nor where the commit came from — that opacity is most
+// of why this bug took a day to find.
+func TestCreateRefusesABaseFromAnotherRepository(t *testing.T) {
+	cfg := env(t, "aa", "zz")
+	// A commit that exists only in aa.
+	source := cfg.RepoPath("aa")
+	if err := os.WriteFile(filepath.Join(source, "only-here.txt"), []byte("aa\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, source, "add", "-A")
+	git(t, source, "commit", "-m", "only in aa")
+	foreign := git(t, source, "rev-parse", "HEAD")
+
+	_, err := Create(cfg, Options{
+		Name:  "01-a",
+		Repos: []string{"zz"},
+		Bases: map[string]gitx.Base{"zz": {Branch: "predecessor", Commit: foreign}},
+	})
+	if err == nil {
+		t.Fatal("Create accepted a base commit that does not exist in the repository")
+	}
+	for _, want := range []string{foreign, "zz"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q: %v", want, err)
+		}
+	}
+}
+
 // The base override is what makes stacked work possible: a successor has to
 // branch from its predecessor's branch, not from the remote's default.
 func TestCreateBranchesFromAnExplicitBase(t *testing.T) {
@@ -226,7 +361,9 @@ func TestCreateBranchesFromAnExplicitBase(t *testing.T) {
 	task, err := Create(cfg, Options{
 		Name:  "02-b",
 		Repos: []string{"nm"},
-		Base:  &gitx.Base{Branch: "predecessor", Commit: head, Source: "predecessor"},
+		Bases: map[string]gitx.Base{
+			"nm": {Branch: "predecessor", Commit: head, Source: "predecessor"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -261,7 +398,7 @@ func TestCreateWithAnExplicitBaseDoesNotNeedTheRemote(t *testing.T) {
 	_, err := Create(cfg, Options{
 		Name:  "02-b",
 		Repos: []string{"nm"},
-		Base:  &gitx.Base{Branch: "main", Commit: head, Source: "test"},
+		Bases: map[string]gitx.Base{"nm": {Branch: "main", Commit: head, Source: "test"}},
 	})
 	if err != nil {
 		t.Fatalf("Create with an explicit base reached for the remote: %v", err)

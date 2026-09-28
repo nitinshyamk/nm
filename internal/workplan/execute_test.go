@@ -1200,8 +1200,112 @@ func TestSuccessorStartsAtReviewAndStacksOnIt(t *testing.T) {
 	}
 }
 
-// eligible and stackBase are one decision in two places. Every state eligible
-// accepts for a single predecessor must be one stackBase knows how to branch from,
+// A successor spanning two repositories stacks each one on its own predecessor
+// branch, and every repository's base must come from that repository.
+//
+// This is the bug that blocked every remaining two-repository row of a real workplan
+// for about 24 hours. The predecessor's head was resolved once — from whichever
+// repository happened to be first — and that single commit id was handed to
+// `git worktree add` in both. The second repository has never heard of it, so it failed
+// with "fatal: invalid reference: <sha>"; by then the first repository's worktree and
+// branch existed and nothing removed them, so every later pass reported "branch
+// already exists" instead of retrying, and recovery took `git branch -D` by hand.
+//
+// A single-repository task could not catch it and neither could a two-repository task
+// whose base is the default branch, because there each repository resolves its own
+// main. It takes both: two repositories, and a stacked base.
+func TestATwoRepoSuccessorStacksEachRepoOnItsOwnBase(t *testing.T) {
+	h := newHarness(t, "nm", "site")
+	h.add(t, Task{
+		ID: "01-a", Repositories: []string{"nm", "site"},
+		Description: "Both.", AcceptanceCriteria: []string{"Done."},
+	})
+	h.add(t, Task{
+		ID: "02-b", Predecessors: []string{"01-a"}, Repositories: []string{"nm", "site"},
+		Description: "After a.", AcceptanceCriteria: []string{"Done."},
+	})
+	h.run(t, false) // starts 01-a
+
+	// 01-a commits different work in each repository, so the two heads are distinct
+	// commits — which is what makes using one for the other detectable.
+	first := h.taskFor(t, "01-a")
+	heads := map[string]string{}
+	for _, repo := range first.Repos {
+		marker := filepath.Join(repo.Dir, "from-01a-"+repo.Name+".txt")
+		if err := os.WriteFile(marker, []byte("work in "+repo.Name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitIn(t, repo.Dir, "add", "-A")
+		gitIn(t, repo.Dir, "commit", "-m", "01-a work in "+repo.Name)
+		heads[repo.Name] = gitIn(t, repo.Dir, "rev-parse", "HEAD")
+	}
+	if heads["nm"] == heads["site"] {
+		t.Fatal("the two repositories have the same head, so this test cannot detect the bug")
+	}
+
+	h.markReady(t, "01-a", h.now)
+	h.run(t, false) // 01-a -> review, and 02-b starts stacked on it
+
+	if got := h.stateOf(t, "02-b"); got != InProgress {
+		t.Fatalf("02-b state = %s, want in-progress: the two-repo successor did not start", got)
+	}
+
+	second := h.taskFor(t, "02-b")
+	if len(second.Repos) != 2 {
+		t.Fatalf("02-b has %d worktrees, want 2", len(second.Repos))
+	}
+	for _, repo := range second.Repos {
+		if got := repo.BaseCommit; got != heads[repo.Name] {
+			t.Errorf("%s branched from %q, want its own predecessor head %q",
+				repo.Name, got, heads[repo.Name])
+		}
+		// The assertion that matters: each worktree holds its own repository's work.
+		// A cross-repo base cannot produce this, because it cannot check out at all.
+		if _, err := os.Stat(filepath.Join(repo.Dir, "from-01a-"+repo.Name+".txt")); err != nil {
+			t.Errorf("%s does not contain 01-a's work from that repository: %v", repo.Name, err)
+		}
+	}
+}
+
+// A two-repository successor that cannot be started leaves no branch behind, so the
+// next pass retries instead of reporting "already exists" forever.
+//
+// The failure mode this pins is the one that made the cross-repo base permanent rather
+// than transient: a partial start whose debris blocks every retry. The cause is fixed
+// above, but a start can still fail — a repository the predecessor does not have, a
+// worktree git refuses — and when it does, the pass after it must be able to try again.
+func TestAFailedStartLeavesNoBranchBehind(t *testing.T) {
+	h := newHarness(t, "nm", "site")
+	h.add(t, def2("01-a", "nm")) // 01-a covers nm only
+	h.add(t, Task{
+		// 02-b wants both, so stacking has no base for site and the start fails.
+		ID: "02-b", Predecessors: []string{"01-a"}, Repositories: []string{"nm", "site"},
+		Description: "After a.", AcceptanceCriteria: []string{"Done."},
+	})
+	h.run(t, false)
+	h.markReady(t, "01-a", h.now)
+
+	result := h.run(t, false)
+
+	if got := h.stateOf(t, "02-b"); got != Planned {
+		t.Errorf("02-b state = %s, want planned: a start that failed must not move the task", got)
+	}
+	if !containsSubstring(result.Problems, "site") {
+		t.Errorf("problems do not name the repository that could not be stacked: %q", result.Problems)
+	}
+
+	// No branch in either repository, which is what lets the next pass retry. A
+	// leftover here is what ran for 24 hours reporting "already exists".
+	branch := "02-b-" + task.Hash(h.cfg.HashLength, "02-b", []string{"nm", "site"})
+	for _, repo := range []string{"nm", "site"} {
+		if gitx.BranchExists(h.cfg.RepoPath(repo), branch) {
+			t.Errorf("a failed start left branch %s behind in %s, blocking every retry", branch, repo)
+		}
+	}
+}
+
+// eligible and stackBases are one decision in two places. Every state eligible
+// accepts for a single predecessor must be one stackBases knows how to branch from,
 // or a successor starts from main and silently loses the work it was scoped to
 // build on — which looks like a successful start, not a failure.
 func TestEligibleAndStackBaseAgree(t *testing.T) {
@@ -1222,7 +1326,7 @@ func TestEligibleAndStackBaseAgree(t *testing.T) {
 			continue
 		}
 		if _, ok := stackableStates()[state]; !ok {
-			t.Errorf("eligible starts a successor when its predecessor is %s, but stackBase "+
+			t.Errorf("eligible starts a successor when its predecessor is %s, but stackBases "+
 				"does not stack on that state — the successor would branch from main and lose "+
 				"the work it builds on", state)
 		}
