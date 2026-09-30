@@ -569,6 +569,11 @@ func plural(n int, one, many string) string {
 }
 
 // Survey lists every task with its repository statuses and artifact counts.
+//
+// Every repository across every task is read at once rather than one task at a
+// time. Fanning out per task but looping within it made the whole survey wait
+// on the slowest *task* — a two-repo task paid for two git statuses back to
+// back — where the repositories have nothing to do with each other.
 func Survey(cfg config.Config) ([]View, error) {
 	tasks, err := List(cfg)
 	if err != nil {
@@ -579,15 +584,25 @@ func Survey(cfg config.Config) ([]View, error) {
 	var wg sync.WaitGroup
 	for i, t := range tasks {
 		views[i] = View{Task: t, Repos: make([]RepoStatus, len(t.Repos))}
+		v := &views[i]
+
+		for j, repo := range t.Repos {
+			wg.Add(1)
+			go func(slot *RepoStatus, repo Repo) {
+				defer wg.Done()
+				// No commit age: the task list shows hazards and badges, never
+				// "last commit 3h ago", so the `git log` that fills it in is a
+				// spawn per repository paid for nothing.
+				st, err := gitx.GetStatusNoAge(repo.Dir)
+				*slot = RepoStatus{Repo: repo, Status: st, Err: err}
+			}(&v.Repos[j], repo)
+		}
+
 		wg.Add(1)
 		go func(v *View) {
 			defer wg.Done()
-			for j, repo := range v.Task.Repos {
-				st, err := gitx.GetStatus(repo.Dir)
-				v.Repos[j] = RepoStatus{Repo: repo, Status: st, Err: err}
-			}
 			v.Artifacts, _ = CountArtifacts(v.Task.Artifacts(cfg))
-		}(&views[i])
+		}(v)
 	}
 	wg.Wait()
 	return views, nil
