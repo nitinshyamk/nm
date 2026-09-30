@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/nitinshyamk/nm/internal/agent"
 	"github.com/nitinshyamk/nm/internal/config"
@@ -96,18 +97,30 @@ func runTaskList(cmd *cobra.Command) error {
 
 // surveyTasks collects task state and matches each task with its agent.
 func surveyTasks(cfg config.Config) ([]taskEntry, error) {
-	views, err := task.Survey(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	client := agent.Client{Bin: cfg.ClaudeCommand}
-	var sessions []agent.Session
-	if client.Available() {
+	// The git survey and the claude session list need nothing from each other,
+	// and each takes seconds: the session query alone measures ~2s against 60-odd
+	// sessions. Run one while the other is waiting rather than adding them up.
+	var (
+		sessions []agent.Session
+		wg       sync.WaitGroup
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		client := agent.Client{Bin: cfg.ClaudeCommand}
+		if !client.Available() {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), agent.ListTimeout)
 		defer cancel()
 		// A claude that cannot be queried must not hide the tasks themselves.
 		sessions, _ = client.List(ctx)
+	}()
+
+	views, err := task.Survey(cfg)
+	wg.Wait()
+	if err != nil {
+		return nil, err
 	}
 
 	entries := make([]taskEntry, 0, len(views))

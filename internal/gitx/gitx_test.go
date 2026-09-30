@@ -333,6 +333,70 @@ func TestParsePorcelainZ(t *testing.T) {
 	}
 }
 
+func TestParsePorcelainBranchZ(t *testing.T) {
+	cases := []struct {
+		name                        string
+		in                          string
+		branch                      string
+		hasUpstream                 bool
+		staged, unstaged, untracked int
+	}{
+		{
+			// The whole point of peeling the header: `## main` has a non-space in
+			// both status columns, so counting it as an entry reports every clean
+			// repository as one staged and one unstaged change.
+			name:   "clean repo counts nothing",
+			in:     "## main\x00",
+			branch: "main",
+		},
+		{
+			name:        "upstream configured",
+			in:          "## main...origin/main\x00",
+			branch:      "main",
+			hasUpstream: true,
+		},
+		{
+			name:        "upstream with divergence",
+			in:          "## main...origin/main [ahead 1, behind 2]\x00",
+			branch:      "main",
+			hasUpstream: true,
+		},
+		{
+			name:     "detached HEAD has no branch",
+			in:       "## HEAD (no branch)\x00 M a.txt\x00",
+			unstaged: 1,
+		},
+		{
+			name:   "unborn HEAD names the branch but has no upstream",
+			in:     "## No commits yet on main\x00?? a.txt\x00",
+			branch: "main", untracked: 1,
+		},
+		{
+			name:   "entries are still counted past the header",
+			in:     "## feature-x\x00A  a.txt\x00 M b.txt\x00?? c.txt\x00",
+			branch: "feature-x",
+			staged: 1, unstaged: 1, untracked: 1,
+		},
+		{
+			name: "no header at all",
+			in:   "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			branch, hasUpstream, staged, unstaged, untracked := ParsePorcelainBranchZ(tc.in)
+			if branch != tc.branch || hasUpstream != tc.hasUpstream {
+				t.Errorf("got branch=%q hasUpstream=%v; want %q/%v",
+					branch, hasUpstream, tc.branch, tc.hasUpstream)
+			}
+			if staged != tc.staged || unstaged != tc.unstaged || untracked != tc.untracked {
+				t.Errorf("got staged=%d unstaged=%d untracked=%d; want %d/%d/%d",
+					staged, unstaged, untracked, tc.staged, tc.unstaged, tc.untracked)
+			}
+		})
+	}
+}
+
 func TestParseWorktreeList(t *testing.T) {
 	in := "worktree /home/u/projects/nm\nHEAD abc\nbranch refs/heads/main\n\n" +
 		"worktree /home/u/projects/worktrees/nm-id-x-123456\nHEAD def\nbranch refs/heads/x-123456\n\n" +
