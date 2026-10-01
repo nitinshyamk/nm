@@ -64,6 +64,10 @@ var (
 				BorderForeground(colorAccent)
 	stylePaneTitle = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 
+	// styleWorking is the highlighted chip in the title that says work is in
+	// flight — reversed so it reads as a lit indicator rather than more text.
+	styleWorking = lipgloss.NewStyle().Bold(true).Padding(0, 1).Reverse(true).Foreground(colorAccent)
+
 	// styleColumnHead labels the status columns. Dim and unbold: it is a legend
 	// read once, not something to look at on every row.
 	styleColumnHead = lipgloss.NewStyle().Foreground(colorMuted)

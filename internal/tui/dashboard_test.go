@@ -604,6 +604,45 @@ func TestBinaryAndHugeFilesDoNotHang(t *testing.T) {
 	}
 }
 
+func TestSourceFilesAreSyntaxHighlighted(t *testing.T) {
+	// A code file comes back colored: the body carries ANSI escapes it did not
+	// have raw, and the plain text is still all there. TypeScript, TOML, and C++
+	// are the languages the request named; each has a chroma lexer.
+	r := NewRenderer()
+	cases := []struct {
+		path string
+		code string
+		want string
+	}{
+		{"app.ts", "const greeting: string = \"hi\"\n", "greeting"},
+		{"Cargo.toml", "[package]\nname = \"demo\"\n", "package"},
+		{"main.cpp", "#include <vector>\nint main() { return 0; }\n", "vector"},
+		{"ui.tsx", "export const App = () => <div/>\n", "App"},
+	}
+	for _, tc := range cases {
+		body := []byte(tc.code)
+		out := r.Render(tc.path, body, int64(len(body)), time.Unix(0, 0), 80)
+		if !strings.Contains(out.Body, "\x1b[") {
+			t.Errorf("%s was not colored: no escape codes in\n%q", tc.path, out.Body)
+		}
+		if !strings.Contains(plain(out.Body), tc.want) {
+			t.Errorf("%s lost its text: %q not in\n%q", tc.path, tc.want, plain(out.Body))
+		}
+	}
+}
+
+func TestUnknownAndPlainFilesAreShownRaw(t *testing.T) {
+	// A file with no lexer must come back byte-for-byte: wrapping plain text in a
+	// highlight pass would add escape codes for no gain, and a log read as code
+	// looks worse than one left alone.
+	r := NewRenderer()
+	plainText := "just some words\nwith no language\n"
+	out := r.Render("notes.txt", []byte(plainText), int64(len(plainText)), time.Unix(0, 0), 80)
+	if out.Body != plainText {
+		t.Errorf("a plain file was altered:\n got %q\nwant %q", out.Body, plainText)
+	}
+}
+
 func TestPreviewCacheAvoidsReformatting(t *testing.T) {
 	r := NewRenderer()
 	body := []byte("# Title\n\nparagraph\n")
@@ -666,47 +705,89 @@ func TestDeleteAsksFirstAndNoSingleKeyDoesIt(t *testing.T) {
 	}
 }
 
-func TestPrefixKeysNeedBothHalves(t *testing.T) {
+func TestNewTaskReturnsAnOutcomeWithoutADir(t *testing.T) {
+	// Creating a task is not an action on a row, so it works from anywhere and
+	// carries no directory for the caller to reload.
 	src := sampleSource()
-
-	// C-x alone is pending, not a quit.
 	m := loaded(t, src)
-	m, _ = step(t, m, pressKey("ctrl+x"))
-	if m.done {
-		t.Fatal("C-x alone quit")
-	}
-	if !strings.Contains(m.View(), "C-x-") {
-		t.Errorf("a pending prefix is not shown:\n%s", m.View())
-	}
+	m = focusTask(t, m, dir("alpha-111111"))
 
-	// A key that completes nothing clears the prefix and does nothing else.
-	m, _ = step(t, m, pressKey("z"))
-	if m.done || m.pending != prefixNone {
-		t.Errorf("an unknown sequence was not dropped: done=%v pending=%v", m.done, m.pending)
-	}
-
-	// C-g clears it too.
-	m, _ = step(t, m, pressKey("ctrl+x"))
-	m, _ = step(t, m, pressKey("ctrl+g"))
-	if m.pending != prefixNone {
-		t.Error("C-g did not clear the pending prefix")
-	}
-
-	// And the whole sequence does quit.
-	m, _ = step(t, m, pressKey("ctrl+x"))
-	m, _ = step(t, m, pressKey("ctrl+c"))
+	m, _ = step(t, m, pressKey("n"))
 	if !m.done {
-		t.Error("C-x C-c did not quit")
+		t.Fatal("n did not leave the dashboard")
+	}
+	if m.outcome.Action != "new" {
+		t.Errorf("n returned %+v, want a \"new\" action", m.outcome)
+	}
+	if m.outcome.Dir != "" {
+		t.Errorf("new task carried a directory %q, want none", m.outcome.Dir)
 	}
 }
 
-func TestBareCtrlCDoesNotQuit(t *testing.T) {
-	// ctrl+c is the first half of C-c C-l here, so on its own it must not throw
-	// away a view someone is reading.
+func TestNewTaskAffordanceIsVisible(t *testing.T) {
+	// The nav entry is drawn in the pane, so the action is discoverable without
+	// opening the help legend.
 	m := loaded(t, sampleSource())
+	if view := plain(m.View()); !strings.Contains(view, "new task") {
+		t.Errorf("the tree pane does not advertise creating a task:\n%s", view)
+	}
+}
+
+func TestInteractReturnsAttachForTheSelectedTask(t *testing.T) {
+	// `i` talks to the task's agent and comes back to the dashboard. It returns
+	// the one "attach" action for both a live agent and a task without one — the
+	// caller attaches or starts a session as needed — so the view always reopens
+	// afterward, unlike `a` which leaves the shell in the task.
+	src := sampleSource()
+
+	// A task with a live agent.
+	m := loaded(t, src)
+	m = focusTask(t, m, dir("alpha-111111"))
+	m, _ = step(t, m, pressKey("i"))
+	if m.outcome.Action != "attach" {
+		t.Errorf("i on a live agent returned %+v, want attach", m.outcome)
+	}
+	if m.outcome.Dir != dir("alpha-111111") {
+		t.Errorf("attach names %q, want alpha", m.outcome.Dir)
+	}
+
+	// A task with no session still returns attach, aimed at the owning task; the
+	// caller starts a fresh session.
+	src2 := sampleSource()
+	src2.sessions = src2.sessions[:1] // keep only alpha's
+	m2 := loaded(t, src2)
+	m2 = focusTask(t, m2, dir("beta-222222"))
+	m2, _ = step(t, m2, pressKey("i"))
+	if m2.outcome.Action != "attach" {
+		t.Errorf("i on a task with no agent returned %+v, want attach", m2.outcome)
+	}
+	if m2.outcome.Dir != dir("beta-222222") {
+		t.Errorf("attach names %q, want beta", m2.outcome.Dir)
+	}
+}
+
+func TestCtrlCQuitsAndCtrlGDoesNot(t *testing.T) {
+	// Quit is a plain C-c now, not an emacs chord. C-g is cancel: it clears the
+	// echo line and never leaves the view.
+	src := sampleSource()
+
+	m := loaded(t, src)
 	m, _ = step(t, m, pressKey("ctrl+c"))
+	if !m.done {
+		t.Error("C-c did not quit")
+	}
+
+	m = loaded(t, src)
+	m, _ = step(t, m, pressKey("ctrl+g"))
 	if m.done {
-		t.Error("a bare ctrl+c quit the dashboard")
+		t.Error("C-g quit the dashboard; it should only cancel")
+	}
+
+	// q still quits, as it always has.
+	m = loaded(t, src)
+	m, _ = step(t, m, pressKey("q"))
+	if !m.done {
+		t.Error("q did not quit")
 	}
 }
 
@@ -752,10 +833,14 @@ func TestFinishedAgentSaysItHasNoLog(t *testing.T) {
 	src := sampleSource()
 	m := loaded(t, src)
 	m = focusTask(t, m, dir("beta-222222"))
+
+	// Measure only beta's fetch: the live alpha agent's log is read on its own
+	// during load now, so the counter is not zero to begin with.
+	before := src.logCalls
 	m = drain(t, m, m.fetchTail())
 
-	if src.logCalls != 0 {
-		t.Errorf("a finished agent was asked for logs %d times", src.logCalls)
+	if src.logCalls != before {
+		t.Errorf("a finished agent was asked for logs %d times", src.logCalls-before)
 	}
 	if !strings.Contains(m.View(), "no log") {
 		t.Errorf("the pane does not explain why there is no output:\n%s", m.View())
@@ -767,14 +852,14 @@ func TestRefreshBumpsTheGenerationAndRefetches(t *testing.T) {
 	m := loaded(t, src)
 	before, sessionsBefore := m.generation, src.sessionCalls
 
-	m, cmd := step(t, m, pressKey("ctrl+l"))
+	m, cmd := step(t, m, pressKey("ctrl+r"))
 	if m.generation == before {
-		t.Error("C-l did not bump the generation")
+		t.Error("C-r did not bump the generation")
 	}
 
 	m = drain(t, m, cmd)
 	if src.sessionCalls <= sessionsBefore {
-		t.Error("C-l did not re-query the sessions")
+		t.Error("C-r did not re-query the sessions")
 	}
 	// The refresh must land rather than be discarded as its own stale reply: the
 	// generation it was issued under is the one still current.
@@ -853,6 +938,82 @@ func TestFilterNarrowsTheTree(t *testing.T) {
 	}
 	if strings.Contains(view, "alpha-111111") {
 		t.Errorf("the filter kept a row that does not match:\n%s", view)
+	}
+}
+
+func TestTabAndShiftTabSwitchPanes(t *testing.T) {
+	// There is only somewhere to switch to once the detail pane has something in
+	// it, so give it a previewed file first.
+	src := sampleSource()
+	notes := filepath.Join(dir("alpha-111111"), "artifacts", "notes.md")
+	m := loaded(t, src)
+	m = expandTo(t, m, dir("alpha-111111"), filepath.Join(dir("alpha-111111"), "artifacts"))
+	m = selectPath(t, m, notes)
+	m, _ = step(t, m, previewMsg{path: notes, content: src.content[notes], size: int64(len(src.content[notes]))})
+
+	if m.focus != focusTree {
+		t.Fatalf("focus started on %v, want the tree", m.focus)
+	}
+	m, _ = step(t, m, pressKey("tab"))
+	if m.focus != focusPreview {
+		t.Errorf("tab did not move focus to the preview: %v", m.focus)
+	}
+	m, _ = step(t, m, pressKey("tab"))
+	if m.focus != focusTree {
+		t.Errorf("tab did not move focus back to the tree: %v", m.focus)
+	}
+
+	// Shift-Tab toggles the same way, so the key someone reaches for works.
+	m, _ = step(t, m, pressKey("shift+tab"))
+	if m.focus != focusPreview {
+		t.Errorf("shift+tab did not move focus to the preview: %v", m.focus)
+	}
+}
+
+func TestAgentLogLoadsWithoutAKeystroke(t *testing.T) {
+	// The log used to wait for C-c C-l. Now it loads on its own: landing on a task
+	// with a live agent is enough.
+	src := sampleSource()
+	m := loaded(t, src)
+	m = focusTask(t, m, dir("alpha-111111"))
+
+	// loadSessions ends by fetching the tail for the selection; drain that fetch
+	// the way the runtime would, then confirm the output is on screen with no key
+	// pressed.
+	m = drain(t, m, m.loadSessions(m.generation))
+	if src.logCalls == 0 {
+		t.Error("the agent log was never fetched without a keystroke")
+	}
+	if view := plain(m.View()); !strings.Contains(view, "Both gaps resolved") {
+		t.Errorf("the agent log did not auto-load into the pane:\n%s", view)
+	}
+}
+
+func TestTitleShowsAHighlightedWorkingIndicator(t *testing.T) {
+	// A visible, highlighted chip says when work is in flight — a running agent,
+	// or a refresh the user just asked for.
+	src := sampleSource()
+	// Give one session the working class, so the chip has something to count.
+	src.sessions[1].Class = classWorking
+	m := loaded(t, src)
+
+	if view := plain(m.View()); !strings.Contains(view, "1 working") {
+		t.Errorf("the title does not count the working agent:\n%s", view)
+	}
+
+	// A refresh outranks the count and names itself.
+	m, _ = step(t, m, pressKey("ctrl+r"))
+	if !m.refreshing {
+		t.Fatal("C-r did not raise the refreshing flag")
+	}
+	if view := plain(m.View()); !strings.Contains(view, "refreshing") {
+		t.Errorf("a running refresh is not shown in the title:\n%s", view)
+	}
+
+	// And it comes down once the session list — the last read — lands.
+	m, _ = step(t, m, sessionsMsg{sessions: src.sessions, gen: m.generation})
+	if m.refreshing {
+		t.Error("the refreshing indicator stayed up after the sessions arrived")
 	}
 }
 

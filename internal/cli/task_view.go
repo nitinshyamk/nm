@@ -65,6 +65,16 @@ func runTaskList(cmd *cobra.Command) error {
 			return nil
 		}
 
+		// Creating a task carries no directory: there is nothing to reload yet. It
+		// runs its own flow and returns to the dashboard, like delete, so a session
+		// of creating and triaging tasks never leaves the view.
+		if outcome.Action == "new" {
+			if err := createTaskInteractively(out, cfg); err != nil {
+				return err
+			}
+			continue
+		}
+
 		// The dashboard hands back a directory rather than a loaded task, so the
 		// state an action works from is read now — after the view closed, and after
 		// however long it was open.
@@ -80,14 +90,53 @@ func runTaskList(cmd *cobra.Command) error {
 			return openTask(out, cfg, entry, true)
 		case "agent":
 			return openTask(out, cfg, entry, false)
+		case "attach":
+			// Interacting is attaching to the live agent: hand the whole terminal to
+			// claude so the session is typed into as normal, then come back to the
+			// dashboard. Unlike open, it leaves the shell where it started.
+			if err := attachAgent(out, cfg, entry); err != nil {
+				return err
+			}
 		case "delete":
-			// Deleting is the one action that returns to the dashboard: the others
-			// end with the shell somewhere else or a session attached.
+			// Deleting is one of the actions that returns to the dashboard: the
+			// select/open/agent ones end with the shell somewhere else.
 			if err := deleteTask(out, cfg, entry); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+// attachAgent hands the terminal to the task's agent for an interactive
+// session, then returns so the dashboard can reopen. A task whose agent has
+// finished has nothing to attach to, so it starts a fresh session in the task
+// directory — the same fallback openTask uses.
+//
+// This is the seamless full-screen attach: claude takes the whole terminal
+// (its own alt screen and raw mode), the user interacts exactly as they would
+// from a shell, and on exit control returns here. nm cannot render claude's
+// interface inside a pane — what claude records is a capture of a full-screen
+// TUI, not a stream — so the pane shows a live tail and `i` is how you type.
+func attachAgent(out io.Writer, cfg config.Config, e taskEntry) error {
+	client := agent.Client{Bin: cfg.ClaudeCommand}
+	if !client.Available() {
+		fmt.Fprintf(out, "%s is not on PATH, so there is no session to attach to\n", cfg.ClaudeCommand)
+		return nil
+	}
+
+	dir := e.View.Task.Dir
+	var session *exec.Cmd
+	if e.Session != nil {
+		session = client.AttachCommand(e.Session.AttachID())
+	} else {
+		session = client.SessionCommand(dir, e.View.Task.Dirs())
+	}
+	session.Dir = dir
+	session.Stdin, session.Stdout, session.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := session.Run(); err != nil {
+		fmt.Fprintf(out, "the claude session ended with: %v\n", err)
+	}
+	return nil
 }
 
 // surveyTasks collects task state and matches each task with its agent.

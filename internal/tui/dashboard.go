@@ -62,10 +62,11 @@ type DashboardConfig struct {
 	Title  string
 	Source Source
 
-	// StatusEvery and SessionsEvery are the refresh cadences. Fields rather than
-	// constants so a test can drive a refresh without sleeping for one.
+	// StatusEvery, SessionsEvery, and TailEvery are the refresh cadences. Fields
+	// rather than constants so a test can drive a refresh without sleeping for one.
 	StatusEvery   time.Duration
 	SessionsEvery time.Duration
+	TailEvery     time.Duration
 
 	// PreviewDelay debounces the preview, so holding the cursor key scrolls
 	// instead of formatting every file it passes over.
@@ -74,16 +75,21 @@ type DashboardConfig struct {
 
 // Cadence defaults. Git status is cheap enough to re-read often; the session
 // query costs ~2s against a real machine's worth of agents, so it goes slower.
+// The tail re-reads the selected agent's output often enough to feel live.
 const (
 	DefaultStatusEvery   = 10 * time.Second
 	DefaultSessionsEvery = 30 * time.Second
+	DefaultTailEvery     = 3 * time.Second
 	DefaultPreviewDelay  = 80 * time.Millisecond
 )
 
 // DashboardOutcome is what the dashboard was asked to do on the way out.
 type DashboardOutcome struct {
-	Action string // "", "select", "open", "agent", "delete"
-	Dir    string // the task the action applies to
+	// Action is "", "select", "open", "agent", "attach", "new", or "delete".
+	// "attach" hands the terminal to the task's live agent; "new" creates a task
+	// and so carries no Dir.
+	Action string
+	Dir    string // the task the action applies to; empty for "new"
 }
 
 // RunDashboard shows the dashboard and blocks until the user leaves.
@@ -129,13 +135,17 @@ type dashboard struct {
 	pvp     viewport.Model
 	pvPath  string // what the preview pane is currently showing
 
-	spin    spinner.Model
-	focus   focus
-	pending prefix
+	spin  spinner.Model
+	focus focus
 
 	// generation counts refreshes. A reply carrying an old number is dropped,
 	// so a slow answer cannot overwrite a fresher one.
 	generation int
+
+	// refreshing is true from the moment a refresh is asked for until the session
+	// list it kicked off answers. It drives the highlighted "working" indicator in
+	// the title, so a background refresh is visible rather than silent.
+	refreshing bool
 
 	filtering bool
 	filter    string
@@ -159,6 +169,9 @@ func newDashboard(cfg DashboardConfig) dashboard {
 	}
 	if cfg.SessionsEvery == 0 {
 		cfg.SessionsEvery = DefaultSessionsEvery
+	}
+	if cfg.TailEvery == 0 {
+		cfg.TailEvery = DefaultTailEvery
 	}
 	if cfg.PreviewDelay == 0 {
 		cfg.PreviewDelay = DefaultPreviewDelay
@@ -214,8 +227,10 @@ type (
 		err  error
 	}
 	previewDueMsg  struct{ path string }
+	tailDueMsg     struct{ id string }
 	statusTickMsg  struct{}
 	sessionTickMsg struct{}
+	tailTickMsg    struct{}
 )
 
 func (m dashboard) Init() tea.Cmd {
@@ -225,6 +240,7 @@ func (m dashboard) Init() tea.Cmd {
 		m.spin.Tick,
 		tea.Tick(m.cfg.StatusEvery, func(time.Time) tea.Msg { return statusTickMsg{} }),
 		tea.Tick(m.cfg.SessionsEvery, func(time.Time) tea.Msg { return sessionTickMsg{} }),
+		tea.Tick(m.cfg.TailEvery, func(time.Time) tea.Msg { return tailTickMsg{} }),
 	)
 }
 
@@ -301,6 +317,9 @@ func (m dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.generation {
 			return m, nil
 		}
+		// The session list is the last of the three reads a refresh fans out, so its
+		// arrival is where the "working" indicator comes down.
+		m.refreshing = false
 		if msg.err != nil {
 			// A claude that cannot be queried must not empty the pane.
 			m.stale = true
@@ -308,7 +327,9 @@ func (m dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sessions = msg.sessions
 		m.applySessions()
-		return m, nil
+		// A fresh session list can change which agent is selected or revive one that
+		// had finished, so re-read the tail for whatever the cursor is on now.
+		return m, m.fetchTail()
 
 	case filesMsg:
 		m.applyFiles(msg)
@@ -317,6 +338,14 @@ func (m dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case previewDueMsg:
 		if node := m.selected(); node != nil && node.Path == msg.path && node.Kind == NodeFile {
 			return m, m.readPreview(node.Path)
+		}
+		return m, nil
+
+	case tailDueMsg:
+		// Only fetch if the cursor is still on the same agent; moving straight past
+		// a row must not spawn a `claude logs` for it.
+		if session := m.sessionForSelection(); session != nil && session.ID == msg.id {
+			return m, m.fetchTail()
 		}
 		return m, nil
 
@@ -342,6 +371,12 @@ func (m dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			m.loadSessions(m.generation),
 			tea.Tick(m.cfg.SessionsEvery, func(time.Time) tea.Msg { return sessionTickMsg{} }),
+		)
+
+	case tailTickMsg:
+		return m, tea.Batch(
+			m.fetchTail(),
+			tea.Tick(m.cfg.TailEvery, func(time.Time) tea.Msg { return tailTickMsg{} }),
 		)
 
 	case tea.KeyMsg:
@@ -520,30 +555,30 @@ func (m dashboard) schedulePreview() tea.Cmd {
 	})
 }
 
+// scheduleTail arms the same debounce for the agent working in the selected
+// task, so the log pane follows the cursor without a `claude logs` per row while
+// a movement key is held. Only a task with its tail not already on screen is
+// worth scheduling; the periodic tick keeps the shown one current.
+func (m dashboard) scheduleTail() tea.Cmd {
+	session := m.sessionForSelection()
+	if session == nil || session.ID == m.tailFor {
+		return nil
+	}
+	id := session.ID
+	return tea.Tick(m.cfg.PreviewDelay, func(time.Time) tea.Msg {
+		return tailDueMsg{id: id}
+	})
+}
+
 func (m dashboard) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case m.confirm != nil:
 		return m.updateConfirm(msg)
 	case m.filtering:
 		return m.updateFilter(msg)
-	case m.pending != prefixNone:
-		return m.updatePrefix(msg)
 	}
 
 	keyStr := msg.String()
-
-	// Prefixes first: ctrl+c only quits as part of C-x C-c, so that a stray
-	// ctrl+c cannot discard a view someone is reading.
-	switch {
-	case key.Matches(msg, m.keys.PrefixCtrlX):
-		m.pending = prefixCtrlX
-		m.status = m.pending.label()
-		return m, nil
-	case key.Matches(msg, m.keys.PrefixCtrlC):
-		m.pending = prefixCtrlC
-		m.status = m.pending.label()
-		return m, nil
-	}
 
 	switch {
 	case key.Matches(msg, m.keys.Quit):
@@ -570,11 +605,9 @@ func (m dashboard) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Refresh):
 		m.generation++
-		m.status = "refreshing"
+		m.refreshing = true
+		m.status = ""
 		return m, tea.Batch(m.loadTasks(m.generation), m.loadSessions(m.generation))
-
-	case key.Matches(msg, m.keys.Tail):
-		return m, m.fetchTail()
 
 	case key.Matches(msg, m.keys.ScrollDown):
 		m.pvp.ScrollDown(3)
@@ -621,6 +654,14 @@ func (m dashboard) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.fold()
 	}
 
+	// New is not tied to a row: it creates a task rather than acting on one, so
+	// it is handled before the row actions and works even on an empty root.
+	if key.Matches(msg, m.keys.New) {
+		m.outcome = DashboardOutcome{Action: "new"}
+		m.done = true
+		return m, tea.Quit
+	}
+
 	// Actions apply to the task a row belongs to, so acting on a file inside a
 	// task does the obvious thing rather than nothing.
 	switch {
@@ -630,6 +671,13 @@ func (m dashboard) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.act("open", keyStr)
 	case key.Matches(msg, m.keys.Agent):
 		return m.act("agent", keyStr)
+	case key.Matches(msg, m.keys.Attach):
+		// Interacting means handing the terminal to the task's agent and coming
+		// back to the dashboard afterward. The caller attaches to a live session or
+		// starts a fresh one when there is none, so this one action covers both; it
+		// differs from `a` in that it returns here rather than leaving the shell in
+		// the task directory.
+		return m.act("attach", keyStr)
 	case key.Matches(msg, m.keys.Delete):
 		if task := m.selectedTask(); task != nil {
 			m.confirm, m.confirmYes = task, 0
@@ -637,25 +685,6 @@ func (m dashboard) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
-}
-
-func (m dashboard) updatePrefix(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	action := resolvePrefix(m.pending, msg.String())
-	m.pending, m.status = prefixNone, ""
-
-	switch action {
-	case prefixQuit:
-		m.done = true
-		return m, tea.Quit
-	case prefixOtherPane:
-		m.focus = m.otherPane()
-		return m, nil
-	case prefixTail:
-		return m, m.fetchTail()
-	default:
-		// An unfinished sequence is dropped rather than guessed at.
-		return m, nil
-	}
 }
 
 func (m dashboard) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -747,7 +776,7 @@ func (m dashboard) moveTo(index int) (tea.Model, tea.Cmd) {
 	if m.cursor == before {
 		return m, nil
 	}
-	return m, m.schedulePreview()
+	return m, tea.Batch(m.schedulePreview(), m.scheduleTail())
 }
 
 // skipHeadings moves off a group heading, which is a label rather than
@@ -1030,7 +1059,15 @@ func (m dashboard) renderTree(plan columnPlan) string {
 	case m.filter != "":
 		b.WriteString(styleMuted.Render("nothing matches "+m.filter) + "\n")
 	default:
-		b.WriteString(styleMuted.Render("no tasks yet — create one with: nm task new <repo>... -n <name>") + "\n")
+		b.WriteString(styleMuted.Render("no tasks yet — press n to create one") + "\n")
+	}
+
+	// A standing nav entry for creating a task, so the action is discoverable from
+	// the pane itself rather than only from the help legend. Drawn once under the
+	// rows, dim like a legend, and hidden while filtering — n is a filter character
+	// then, not a command.
+	if !m.filtering && m.filter == "" {
+		b.WriteString(styleDirName.Render("+ new task") + styleMuted.Render("  (n)") + "\n")
 	}
 
 	style := stylePane
@@ -1038,7 +1075,55 @@ func (m dashboard) renderTree(plan columnPlan) string {
 		style = stylePaneFocused
 	}
 	return style.Width(m.treeWidth() - 2).Height(m.bodyHeight()).Render(
-		stylePaneTitle.Render(trim(m.cfg.Title, m.treeWidth()-4)) + "\n" + b.String())
+		m.titleBar() + "\n" + b.String())
+}
+
+// titleBar is the tree pane's heading: the title, with a highlighted chip
+// pushed to the right edge whenever work is in flight. The chip is the visible
+// answer to "is anything happening" — a background refresh, or agents still
+// working — rather than leaving that to the one spinner frame in a column.
+func (m dashboard) titleBar() string {
+	width := m.treeWidth() - 4
+	chip := m.workingChip()
+	title := stylePaneTitle.Render(trim(m.cfg.Title, max(width-lipgloss.Width(chip)-1, 1)))
+	if chip == "" {
+		return title
+	}
+	gap := width - lipgloss.Width(title) - lipgloss.Width(chip)
+	if gap < 1 {
+		gap = 1
+	}
+	return title + strings.Repeat(" ", gap) + chip
+}
+
+// workingChip is the highlighted indicator, or "" when nothing is in flight. A
+// refresh outranks the agent count because it is the thing the user just asked
+// for and is waiting on.
+//
+// The marker is a static ● rather than the spinner frame: the spinner carries
+// its own color-and-reset codes, and nesting them inside the chip's reverse
+// style would end the reverse at the first reset — the chip is the lit
+// highlight, so it has to be one unbroken span.
+func (m dashboard) workingChip() string {
+	if m.refreshing {
+		return styleWorking.Render("● refreshing")
+	}
+	if n := m.workingAgents(); n > 0 {
+		return styleWorking.Render(fmt.Sprintf("● %d working", n))
+	}
+	return ""
+}
+
+// workingAgents counts the sessions claude reports as actively working, which is
+// what the chip announces when no refresh is running.
+func (m dashboard) workingAgents() int {
+	n := 0
+	for _, session := range m.sessions {
+		if session.Class == classWorking {
+			n++
+		}
+	}
+	return n
 }
 
 func (m dashboard) renderDetail() string {
@@ -1126,8 +1211,10 @@ func (m dashboard) renderAgents() string {
 			for _, line := range tailLines(m.tail, m.previewWidth()-2, m.agentsHeight()-4) {
 				b.WriteString(line + "\n")
 			}
-		} else {
-			b.WriteString("\n" + styleMuted.Render("C-c C-l to read its recent output") + "\n")
+		} else if session.Live {
+			// The tail loads on its own and re-reads on a timer, so this is only on
+			// screen for the moment before the first read lands.
+			b.WriteString("\n" + styleMuted.Render("reading its recent output…") + "\n")
 		}
 	}
 

@@ -24,6 +24,8 @@ func pressKey(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyRight}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
 	case "backspace":
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	default:

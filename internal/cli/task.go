@@ -11,8 +11,10 @@ import (
 	"github.com/nitinshyamk/nm/internal/agent"
 	"github.com/nitinshyamk/nm/internal/config"
 	"github.com/nitinshyamk/nm/internal/gitx"
+	"github.com/nitinshyamk/nm/internal/repos"
 	"github.com/nitinshyamk/nm/internal/task"
 	"github.com/nitinshyamk/nm/internal/tui"
+	"github.com/nitinshyamk/nm/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -183,6 +185,77 @@ func newTaskNewCmd() *cobra.Command {
 		})
 	}
 	return cmd
+}
+
+// createTaskInteractively walks the same three steps `nm task new` takes —
+// choose repositories, name the task, write a prompt — but through the TUI, so
+// it can be reached from the dashboard with a keystroke rather than by leaving
+// for the command line. It returns to the caller (the dashboard loop) whether
+// it created a task or the user backed out.
+//
+// The order matches the command's: repos, then name, then prompt. Escaping any
+// step cancels the whole thing, because a task with no repositories and no name
+// is nothing to create.
+func createTaskInteractively(out io.Writer, cfg config.Config) error {
+	available := repos.Names(cfg, "")
+	if len(available) == 0 {
+		fmt.Fprintf(out, "no repositories found under %s\n", cfg.Projects())
+		return nil
+	}
+
+	repoResult, err := tui.RunMultiSelect(tui.MultiSelectConfig{
+		Title:       "New task — choose repositories",
+		Context:     []string{"type to filter · enter adds the highlighted repo · C-s when done"},
+		Placeholder: "repository name",
+		Candidates:  available,
+		MinChoices:  1,
+	})
+	if err != nil {
+		return err
+	}
+	if !repoResult.Submitted || len(repoResult.Chosen) == 0 {
+		fmt.Fprintln(out, "cancelled; no task created")
+		return nil
+	}
+
+	nameResult, err := tui.RunInput(tui.InputConfig{
+		Title:       "New task — name it",
+		Context:     []string{"repos: " + strings.Join(repoResult.Chosen, ", ")},
+		Placeholder: "task name",
+		Validate:    worktree.ValidateName,
+	})
+	if err != nil {
+		return err
+	}
+	if !nameResult.Submitted {
+		fmt.Fprintln(out, "cancelled; no task created")
+		return nil
+	}
+
+	t, err := task.Create(cfg, task.Options{
+		Name:  nameResult.Text,
+		Repos: repoResult.Chosen,
+	})
+	if err != nil {
+		if errors.Is(err, gitx.ErrRemoteUnreachable) {
+			return fmt.Errorf("%w\n\nnm branches from the remote's current default branch. To branch from\n"+
+				"local refs instead, create the task with: nm task new --offline", err)
+		}
+		return err
+	}
+
+	fmt.Fprintf(out, "created %s\n", t.Dir)
+	for _, r := range t.Repos {
+		fmt.Fprintf(out, "  %s → %s (from %s)\n", r.Name, r.Branch, r.BaseBranch)
+	}
+
+	// The prompt editor opens next; a submitted prompt starts a background agent,
+	// an empty one leaves the task without one — the same contract startAgent has
+	// everywhere else.
+	if err := startAgent(out, cfg, &t); err != nil {
+		fmt.Fprintf(out, "nm: %v\n", err)
+	}
+	return nil
 }
 
 // startTaskFileAgent launches the agent for a task that came with a definition.

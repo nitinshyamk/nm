@@ -3,10 +3,15 @@ package tui
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -97,9 +102,72 @@ func (r *Renderer) render(path string, content []byte, size int64, width int) Pr
 		}
 		// Formatting failed, which is not a reason to show nothing: the raw text
 		// is still the file, and still what the reader wanted.
+	} else if body, ok := highlight(path, text); ok {
+		out.Body = body
+		return out
 	}
 	out.Body = text
 	return out
+}
+
+// highlight colors source code by language, returning the formatted body and
+// whether anything was done. A file chroma has no lexer for — plain text, a
+// log, an unknown extension — comes back unchanged, so the caller shows it raw
+// rather than wrapping it in an identity pass that costs tokenizing for nothing.
+//
+// The lexer is chosen by filename first (the extension is the reliable signal
+// for a named file) and only then by content, so a .ts is TypeScript rather
+// than whatever its first line happens to resemble.
+func highlight(path, text string) (string, bool) {
+	lexer := lexers.Match(filepath.Base(path))
+	if lexer == nil {
+		lexer = lexers.Analyse(text)
+	}
+	if lexer == nil || !worthHighlighting(lexer) {
+		return "", false
+	}
+
+	// Coalesce merges adjacent tokens of the same type, which cuts the escape
+	// codes the terminal formatter emits roughly in half with no visible change.
+	iterator, err := chroma.Coalesce(lexer).Tokenise(nil, text)
+	if err != nil {
+		return "", false
+	}
+
+	var b strings.Builder
+	if err := chromaFormatter.Format(&b, chromaStyle(), iterator); err != nil {
+		return "", false
+	}
+	return b.String(), true
+}
+
+// worthHighlighting rejects the lexers that would only wrap the text in escape
+// codes without coloring anything: chroma's fallback (any unmatched file) and
+// its plaintext lexer (what .txt and friends resolve to) both tokenize the whole
+// file as one undifferentiated run, so the preview is better off raw.
+func worthHighlighting(lexer chroma.Lexer) bool {
+	switch strings.ToLower(lexer.Config().Name) {
+	case "fallback", "plaintext", "plain text", "no highlighting":
+		return false
+	default:
+		return true
+	}
+}
+
+// chromaFormatter writes 256-color ANSI. Not truecolor: the preview sits beside
+// lipgloss's adaptive palette, which the terminal already maps to its own
+// scheme, and 256 is the widest depth every terminal nm runs in agrees on.
+var chromaFormatter = formatters.Get("terminal256")
+
+// chromaStyle matches the terminal background the same way glamourStyle does, so
+// a light terminal gets dark text on light rather than a theme built for the
+// opposite. styles.Get falls back to its default for an unknown name, so a
+// missing style degrades to readable rather than to nothing.
+func chromaStyle() *chroma.Style {
+	if lipgloss.HasDarkBackground() {
+		return styles.Get("github-dark")
+	}
+	return styles.Get("github")
 }
 
 // markdown formats text to the pane width, reusing the renderer when the width
