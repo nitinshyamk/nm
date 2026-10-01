@@ -52,6 +52,24 @@ var (
 
 	styleButton = lipgloss.NewStyle().Padding(0, 2)
 	styleFocus  = lipgloss.NewStyle().Padding(0, 2).Bold(true).Reverse(true)
+
+	// Dashboard styles. The pane border is neutral on purpose: styleDialog above
+	// is bordered in colorDanger because it is a warning, and reusing it for
+	// ordinary panes would make the whole screen look alarming.
+	stylePane = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorMuted)
+	stylePaneFocused = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(colorAccent)
+	stylePaneTitle = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+
+	// styleColumnHead labels the status columns. Dim and unbold: it is a legend
+	// read once, not something to look at on every row.
+	styleColumnHead = lipgloss.NewStyle().Foreground(colorMuted)
+	styleGroupRow   = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	styleDirName    = lipgloss.NewStyle().Foreground(colorAccent)
+	styleSpinner    = lipgloss.NewStyle().Foreground(colorAccent)
 )
 
 func badgeStyle(kind BadgeKind) lipgloss.Style {

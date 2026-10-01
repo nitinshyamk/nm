@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ListTimeout bounds the status query the task view runs on every refresh.
@@ -245,6 +247,36 @@ func (c Client) Stop(id string) error {
 		return fmt.Errorf("stopping agent %s: %s: %w", id, strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// LogTimeout bounds a log read. Shorter than ListTimeout because this one runs
+// while someone is looking at the pane waiting for it.
+const LogTimeout = 10 * time.Second
+
+// Logs returns a background session's recent terminal output, with the escape
+// codes removed.
+//
+// What claude records is a capture of its own full-screen interface — cursor
+// positioning, redraws, colors — rather than an append-only log, so the raw text
+// is unreadable anywhere but a terminal of the same size. Stripping leaves the
+// lines a person would have read.
+//
+// A session that has exited has no log, and claude says so on stderr with a
+// non-zero status; that is an ordinary answer rather than a failure, so it comes
+// back as an error the caller can show in place of the output.
+func (c Client) Logs(ctx context.Context, id string) (string, error) {
+	cmd := exec.CommandContext(ctx, c.bin(), "logs", id)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
+		return "", fmt.Errorf("claude logs %s: %s: %w", id, msg, err)
+	}
+	return ansi.Strip(stdout.String()), nil
 }
 
 // AttachCommand builds the command that opens a background session in this

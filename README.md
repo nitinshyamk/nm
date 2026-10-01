@@ -262,32 +262,75 @@ Your shell is left in the worktree. When you are done, `nm task remove
 feature-auth` clears it away; the branch itself is on the remote and is never
 deleted by nm.
 
-### The task list
+### The task dashboard
 
-`nm task` groups tasks by what they need from you, most blocked first:
+`nm task` opens a full-screen view of every task, grouped by what it needs from
+you, most blocked first:
 
 ```
-Needs input
-▸ auth-9c31a0      agent: needs reply   ✎2 ↑1   artifacts:3
-Finished
-  docs-4b1e77      agent: done          clean
-Working
-  index-77ac10     agent: working       +1
-No agent
-  spike-0c2e91     no agent             clean
+┌─ tasks in ~/projects/tasks ───────────────┬─ migration-plan.md ─────────────┐
+│ NAME              AGENT    GIT        PR  │ # Migration plan                │
+│ Needs input                               │                                 │
+│ ▸ auth-9c31a0     needs r… ✎2 ↑1      #14 │ ## Phase 1 — foundation         │
+│ Working                                   │                                 │
+│ ▾ index-77ac10    working  +1             │ The catalog package moves first… │
+│     ▾ artifacts/ (3)                      │                                 │
+│       → migration-plan.md          56 KB  ├─ agents ────────────────────────┤
+│     ▸ input/                              │ ●  77ac10  working  12m         │
+│ Finished                                  │   nm-index-77ac10               │
+│ ▸ docs-4b1e77     done     clean          │ ─────────────────────────────── │
+│ No agent                                  │ ● Both gaps resolved. Verifying │
+│ ▸ spike-0c2e91    —        clean          │   Ran 6 shell commands          │
+└───────────────────────────────────────────┴─────────────────────────────────┘
+ C-n down · C-f unfold · C-s find · RET cd here · o editor + agent · ? keys
 ```
+
+The tree is on screen immediately, because listing tasks only reads a small file
+per directory. The git columns and the agent state cost seconds, so they stream in
+behind it — a spinner marks what has not arrived — then refresh on their own: git
+every 10s, agents every 30s. A failed refresh keeps the last good numbers and says
+they are old rather than blanking the view.
 
 The grouping is not a guess: `claude agents --json` reports each session's
 state, and `needs_approval`, `needs_reply`, and `blocked` all mean the agent
-stopped and is waiting on you.
+stopped and is waiting on you. A directory under the tasks root with no readable
+`.nm-task.json` is listed under `Unrecognized` — nm cannot manage it, and that is
+worth seeing rather than hiding, because a stranded worktree lives there.
 
-- `enter` cds into the task.
+Keys are emacs-style, and the vi-style keys the lists have always had still work:
+
+| | |
+|---|---|
+| `C-p` / `C-n` | up and down |
+| `C-f` / `C-b` | unfold, fold |
+| `C-v` / `M-v` | page down, page up |
+| `M-<` / `M->` | first, last |
+| `C-x o` | switch panes |
+| `M-n` / `M-p` | scroll the preview |
+| `C-s` | find |
+| `C-l` | refresh now |
+| `C-c C-l` | read the selected task's agent log |
+| `C-g` | cancel · `C-x C-c` quit · `?` all keys |
+
+Unfolding a task shows its `input/`, `artifacts/`, `scratch/`, and `escalations/`
+directories and its worktrees; unfolding one of those lists what is inside. Moving
+onto a file previews it in the right pane, with markdown formatted. Only the first
+64KB of a file is formatted, and the pane says so — a 2MB artifact would otherwise
+take seconds to render while you scrolled past it.
+
+Actions apply to the task a row belongs to, so they work from a file inside it:
+
+- `RET` cds into the task.
 - `o` opens the task directory in your editor *and* attaches to its agent in
   this terminal; when it exits you are left in the task directory.
 - `a` attaches to the agent without the editor, and still leaves you in the task
   directory when it exits.
 - `d` deletes, after listing uncommitted work in every repo and flagging a
   non-empty `artifacts/`. A running agent is stopped first.
+
+`nm task select`, `pr`, `remove`, and `complete` still open the small inline pane
+instead: they pick one task for one action, and keeping them in the scrollback is
+more useful than a full screen.
 
 ## Workplans
 
@@ -363,9 +406,11 @@ the remote and pushes back to it, so that name is never rewritten. Directory
 names never take the prefix either — a `/` there would nest a worktree a level
 deeper than discovery looks.
 
-The lists and the prompt editor draw as a pane below your command rather than
-taking over the terminal, and scroll away with the rest of your scrollback;
-`list_rows` and `prompt_rows` set how tall they get.
+The worktree list, the single-action task lists, and the prompt editor draw as a
+pane below your command rather than taking over the terminal, and scroll away with
+the rest of your scrollback; `list_rows` and `prompt_rows` set how tall they get.
+`nm task` is the exception: it is a full-screen dashboard and takes the whole
+terminal, so `list_rows` does not apply to it.
 
 `nm config` prints the file's location and contents; `nm config get <key>`
 prints one setting with `~` already expanded.
