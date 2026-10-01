@@ -33,8 +33,15 @@ func (e taskEntry) Class() agent.Class {
 	return e.Session.Class()
 }
 
-// runTaskList opens the task picker, or prints a plain listing when there is
+// runTaskList opens the task dashboard, or prints a plain listing when there is
 // no terminal to draw on.
+//
+// The dashboard takes the whole screen, unlike the single-action pickers behind
+// `task select` and friends: a task root is a working surface — what needs you,
+// what each agent is doing, what it has written — and at eight rows it was a
+// quarter of a view. It also paints before anything slow has run, because the
+// task list itself is a directory read while the git and claude state behind it
+// costs seconds.
 func runTaskList(cmd *cobra.Command) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -47,40 +54,26 @@ func runTaskList(cmd *cobra.Command) error {
 	}
 
 	for {
-		entries, err := surveyTasks(cfg)
-		if err != nil {
-			return err
-		}
-
-		rows := make([]tui.Row, 0, len(entries))
-		for _, e := range entries {
-			rows = append(rows, taskRow(e))
-		}
-
-		outcome, err := tui.Run(tui.Config{
-			Title:   fmt.Sprintf("tasks in %s", cfg.Tasks()),
-			Rows:    rows,
-			MaxRows: cfg.ListRows,
-			Empty:   "no tasks yet — create one with: nm task new <repo>... -n <name>",
-			Actions: []tui.Action{
-				{Key: "enter", Name: "select", Help: "cd here"},
-				{Key: "o", Name: "open", Help: "open editor + agent"},
-				{Key: "a", Name: "agent", Help: "agent only, no editor"},
-				{Key: "d", Name: "delete", Help: "delete", Confirm: tui.ConfirmIfRisky, Verb: "Delete"},
-			},
+		outcome, err := tui.RunDashboard(tui.DashboardConfig{
+			Title:  fmt.Sprintf("tasks in %s", cfg.Tasks()),
+			Source: taskSource{cfg: cfg},
 		})
 		if err != nil {
 			return err
 		}
+		if outcome.Action == "" {
+			return nil
+		}
 
-		entry, ok := outcome.Row.Data.(taskEntry)
-		if outcome.Action != "" && !ok {
-			return fmt.Errorf("unexpected row payload %T", outcome.Row.Data)
+		// The dashboard hands back a directory rather than a loaded task, so the
+		// state an action works from is read now — after the view closed, and after
+		// however long it was open.
+		entry, err := reloadEntry(cfg, outcome.Dir)
+		if err != nil {
+			return err
 		}
 
 		switch outcome.Action {
-		case "":
-			return nil
 		case "select":
 			return enterDir(out, entry.View.Task.Dir)
 		case "open":
@@ -88,6 +81,8 @@ func runTaskList(cmd *cobra.Command) error {
 		case "agent":
 			return openTask(out, cfg, entry, false)
 		case "delete":
+			// Deleting is the one action that returns to the dashboard: the others
+			// end with the shell somewhere else or a session attached.
 			if err := deleteTask(out, cfg, entry); err != nil {
 				return err
 			}
