@@ -204,6 +204,9 @@ post on PRs not authored by Nitin, act on agent posts (§5 C2).
 - Quiet otherwise.
 
 ## 9. State (`/root/workspace/pr-review/state/`)
+The gate is `scripts/pr-review/gate.py <scope>` (this branch). It prints the work list and the next
+follow-up time and writes `<scope>.next.json`; `gate.py <scope> --commit` promotes it once the fire's
+work is handled. A sandbox reset only loses state: re-clone this repo and the next fire re-seeds.
 `<scope>.json` (fingerprints, ladder position, fix-attempt counts), `<scope>.lock`, `exclude.json`.
 Rebuildable from GitHub. If state is missing, seed fingerprints silently and act only on items that
 fail C4 (no agent reply yet) — never re-answer a comment already followed by an agent reply.
