@@ -63,6 +63,8 @@ C4  Does an agent reply already follow it in the same thread?
     └─ no  → C5
 C5  Resolve the target text:
       • a bare "nhs-agent" reply → target = its parent comment, treated as addressed to nhs-agent
+      • Nitin replying "nhs-agent, address this / take a look" in a bot's thread → the ask is
+        Nitin's (N-branch), the work is the bot finding at the thread root
       • otherwise → target = the comment itself
     → C6
 C6  Who wrote it?
@@ -126,7 +128,8 @@ O7  Is it a change request / review finding?
 ```
 B1  Is it actionable? (CodeRabbit "Actionable comments posted: N>0", an inline suggestion,
     a security/dependency alert)
-    ├─ no  → STOP (summaries, walkthroughs, "no actionable comments")
+    ├─ no  → STOP (summaries, walkthroughs, "no actionable comments",
+    │        follow-ups confirming a fix / "Review thread resolved")
     └─ yes → B2
 B2  Obvious & trivial (see §5.6)?
     ├─ yes → DO, reply in the bot's thread with SHA, no escalation
@@ -186,8 +189,15 @@ post on PRs not authored by Nitin, act on agent posts (§5 C2).
 Rebuildable from GitHub. If state is missing, seed fingerprints silently and act only on items that
 fail C4 (no agent reply yet) — never re-answer a comment already followed by an agent reply.
 
+## Operational notes
+- Never block a fire waiting on CI (sleep loops time out the run). Push, reply, set the PR's ladder to the
+  5-min CI hold (§3), and let the next fire read the result.
+
 ## Live-check log
 - 2026-10-14 gdt #64: rebased onto B1 (69acabb -> a0ea555, trivial export-block conflict), CI green.
 - 2026-10-14 gdt #65: add/add conflict on render/files.ts + names.ts escalated; Nitin chose "adopt B1's
   files and port"; another session (coordinator) had already done it (41807ca) — no push needed.
   Answered two inline Domain.lean questions (one via a bare "nhs-agent" reply). CI green.
+- 2026-10-14 gdt #65 (run 2): Nitin asked nhs-agent, in CodeRabbit's thread, to address the finding and
+  rebase. Rebased onto A7 (5c93aa2; trivial README table-row conflict), fixed generated-name collision
+  checks in render/lean/checks.ts + regression test (c5d9ad2). CI green; CodeRabbit verified and resolved.
