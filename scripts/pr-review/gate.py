@@ -9,7 +9,8 @@ needs `rm` (deletes require human approval and fail closed in unattended fires).
 finds a lock younger than 20 min prints {"locked": true} and does nothing.
 
 Scopes: hadrian, sidebar, turbo-goblin, gdt, other. State lives in /root/workspace/pr-review/state and is
-rebuildable from GitHub; a missing state file seeds silently and only flags unanswered nhs-agent asks.
+rebuildable from GitHub. Work is driven by current needs (conflicts, failing CI, unanswered nhs-agent
+asks, unreplied bot findings, approve/changes-requested reviews), so a fresh state never hides them.
 """
 import hashlib, json, os, subprocess, sys, time
 
@@ -53,6 +54,38 @@ def unanswered_nhs(ic, rc):
     return n
 
 
+BOTS = ('coderabbitai[bot]',)
+
+
+def open_bot_findings(rc):
+    """Root inline comments from review bots with no agent reply in their thread (B1/B2)."""
+    roots = [c for c in rc if c['user']['login'] in BOTS and not c.get('in_reply_to_id')]
+    n = 0
+    for r in roots:
+        thread = [c for c in rc if c.get('in_reply_to_id') == r['id']]
+        if not any(is_agent(c['body']) for c in thread):
+            n += 1
+    return n
+
+
+def needs_of(fp, checks, ic, rc, rv):
+    """What currently needs attention, independent of what changed (playbook §5-§6)."""
+    needs = []
+    if fp['mergeable'] == 'dirty':  # 'behind' alone is not a need; rebase only on conflict
+        needs.append(f"base:{fp['mergeable']}")
+    bad = [c['name'] for c in checks if c.get('conclusion') in ('failure', 'timed_out')]
+    if bad:
+        needs.append('ci:' + ','.join(sorted(bad)))
+    if unanswered_nhs(ic, rc):
+        needs.append(f'nhs-agent:{unanswered_nhs(ic, rc)}')
+    if open_bot_findings(rc):
+        needs.append(f'bot:{open_bot_findings(rc)}')
+    for r in rv:
+        if r['state'] in ('APPROVED', 'CHANGES_REQUESTED') and r['user']['login'] not in BOTS:
+            needs.append(f"review:{r['id']}:{r['state']}")
+    return needs
+
+
 def main():
     scope = sys.argv[1]
     os.makedirs(STATE, exist_ok=True)
@@ -93,8 +126,10 @@ def main():
         key = f'{repo}#{n}'
         prev = old.get(key)
         changed = [] if prev is None else [k for k in fp if prev.get(k) != fp[k]]
-        pending = unanswered_nhs(ic, rc)
+        needs = needs_of(fp, checks, ic, rc, rv)
+        sig = hashlib.sha1(json.dumps([fp['head'], needs]).encode()).hexdigest()[:10]
         meta = {k: prev[k] for k in ('fix_attempts', 'notified_sha') if prev and k in prev}
+        meta['handled'] = sig  # promoted on --commit, i.e. once this fire has handled it
         if (prev is None and not seeded) or changed:
             ladder = 0
         elif prev is not None and prev.get('ladder') is not None:
@@ -107,9 +142,12 @@ def main():
         new[key] = {**fp, **meta, 'ladder': ladder}
         if ladder is not None:
             due.append(now + LADDER_MIN[ladder] * 60_000)
-        if (seeded and pending) or (not seeded and (prev is None or changed)):
+        # Work = something needs attention that no fire has handled yet at this head, or anything changed.
+        # A missing/fresh state never hides existing needs (seeding is not "already handled").
+        unhandled = bool(needs) and (prev is None or prev.get('handled') != sig)
+        if unhandled or (prev is not None and changed):
             work.append({'pr': key, 'url': pr['html_url'], 'is_new': prev is None, 'changed': changed,
-                         'unanswered_nhs_agent': pending, 'mergeable': fp['mergeable'],
+                         'needs': needs, 'mergeable': fp['mergeable'],
                          'failing_checks': [c for c in fp['checks'] if c.endswith(('/failure', '/timed_out'))]})
     json.dump(new, open(nxt, 'w'), indent=1)
     print(json.dumps({'scope': scope, 'seeded': seeded, 'tracked': len(new), 'work': work,

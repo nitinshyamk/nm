@@ -208,8 +208,10 @@ The gate is `scripts/pr-review/gate.py <scope>` (this branch). It prints the wor
 follow-up time and writes `<scope>.next.json`; `gate.py <scope> --commit` promotes it once the fire's
 work is handled. A sandbox reset only loses state: re-clone this repo and the next fire re-seeds.
 `<scope>.json` (fingerprints, ladder position, fix-attempt counts), `<scope>.lock`, `exclude.json`.
-Rebuildable from GitHub. If state is missing, seed fingerprints silently and act only on items that
-fail C4 (no agent reply yet) — never re-answer a comment already followed by an agent reply.
+Rebuildable from GitHub. The gate flags work from current *needs* — conflicts/behind, failing CI,
+unanswered nhs-agent asks, bot findings with no agent reply, APPROVED/CHANGES_REQUESTED reviews — not
+just from diffs, and records a per-PR `handled` signature (head + needs) on `--commit`. A missing state
+never hides an existing need; C4 still prevents re-answering anything already followed by an agent reply.
 
 ## Operational notes
 - Unattended fires cannot answer approval prompts: any command that needs approval fails the whole
