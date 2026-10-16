@@ -187,8 +187,15 @@ judge the finding from the thread alone without re-deriving it:
    Trivial: lockfiles (regenerate), import/export ordering, adjacent non-overlapping blocks.
    NOT trivial (abort + escalate): add/add of the same file with different content, conflicting
    definitions of the same symbol, anything needing a design choice between two implementations.
-8. Commits: Conventional Commits per repo convention.
-9. Reply on the PR per §5.5: first line `**nhs-agent:pr-review**`, then what changed + commit SHA.
+8. Stacked PRs (base is not the default branch): most workflows only trigger on `pull_request` into
+   `main`, so a stacked PR gets only the Jira/checklist checks. After every push to a stacked PR's head,
+   dispatch the full CI on the head branch with `workflow_dispatch`
+   (`gh api -X POST repos/<repo>/actions/workflows/<file>/dispatches -f ref=<head-branch>`).
+   Sidebar: `dfm.yaml` and `dfm-backend.yaml`. Other repos: each workflow that has `workflow_dispatch`
+   and would run on a `main`-based PR touching the same paths. Dispatching is not a workflow edit.
+   The gate treats the dispatched runs on the head SHA as that PR's CI.
+9. Commits: Conventional Commits per repo convention.
+10. Reply on the PR per §5.5: first line `**nhs-agent:pr-review**`, then what changed + commit SHA.
 
 ## 7. Never
 Merge, approve, mark ready / convert to draft, change reviewers/labels/assignees, edit
