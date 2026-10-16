@@ -2,7 +2,11 @@
 """nhs-agent:pr-review gate (playbook §4). Cheap, deterministic, no GitHub writes.
 
   gate.py <scope>            print {"work": [...], "followup_at": ms|null, "seeded": bool}; writes <scope>.next.json
-  gate.py <scope> --commit   promote <scope>.next.json to <scope>.json (run after the work is handled)
+  gate.py <scope> --commit   promote <scope>.next.json to <scope>.json and release the lock
+
+The lock is taken by the plain run and released by --commit, all inside this script, so a fire never
+needs `rm` (deletes require human approval and fail closed in unattended fires). A plain run that
+finds a lock younger than 20 min prints {"locked": true} and does nothing.
 
 Scopes: hadrian, sidebar, turbo-goblin, gdt, other. State lives in /root/workspace/pr-review/state and is
 rebuildable from GitHub; a missing state file seeds silently and only flags unanswered nhs-agent asks.
@@ -52,10 +56,17 @@ def unanswered_nhs(ic, rc):
 def main():
     scope = sys.argv[1]
     os.makedirs(STATE, exist_ok=True)
-    cur, nxt = f'{STATE}/{scope}.json', f'{STATE}/{scope}.next.json'
+    cur, nxt, lock = f'{STATE}/{scope}.json', f'{STATE}/{scope}.next.json', f'{STATE}/{scope}.lock'
     if '--commit' in sys.argv:
-        os.replace(nxt, cur)
+        if os.path.exists(nxt):
+            os.replace(nxt, cur)
+        if os.path.exists(lock):
+            os.remove(lock)
         return
+    if os.path.exists(lock) and time.time() - os.path.getmtime(lock) < 20 * 60:
+        print(json.dumps({'scope': scope, 'locked': True}))
+        return
+    open(lock, 'w').write(str(int(time.time())))
     seeded = not os.path.exists(cur)
     old = {} if seeded else json.load(open(cur))
     items = gh('search/issues', '-X', 'GET', '-f',

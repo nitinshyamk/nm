@@ -212,6 +212,12 @@ Rebuildable from GitHub. If state is missing, seed fingerprints silently and act
 fail C4 (no agent reply yet) — never re-answer a comment already followed by an agent reply.
 
 ## Operational notes
+- Unattended fires cannot answer approval prompts: any command that needs approval fails the whole
+  fire closed. Never run `rm`/`rm -rf`, `git push --force*`, or other approval-gated commands from a
+  fire. Locks and state live in gate.py; stale worktrees are reused (`git worktree add -B` / `git
+  reset --hard origin/<branch>`), never deleted. A rebase that needs a force-push is prepared, then
+  ESCALATED with the branch, the old/new SHAs and the exact push command, unless force-push is
+  allowlisted for fires (see the note at the top of §6).
 - Never block a fire waiting on CI (sleep loops time out the run). Push, reply, set the PR's ladder to the
   5-min CI hold (§3), and let the next fire read the result.
 
